@@ -1,0 +1,319 @@
+:root {
+  --bg-top: #061220;
+  --bg-bottom: #0a2136;
+  --panel: #0f2942;
+  --panel-soft: #12324f;
+  --line: #2d4f70;
+  --text: #eaf3ff;
+  --muted: #9eb8d4;
+  --accent: #ffb347;
+  --accent-2: #42d6c4;
+  --danger: #f38b8b;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  color: var(--text);
+  font-family: var(--font-title), "Trebuchet MS", sans-serif;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(66, 214, 196, 0.2), transparent 35%),
+    radial-gradient(circle at 85% 10%, rgba(255, 179, 71, 0.2), transparent 35%),
+    linear-gradient(165deg, var(--bg-top) 0%, var(--bg-bottom) 75%);
+}
+
+a {
+  color: inherit;
+}
+
+.shell {
+  width: 100%;
+  padding: 28px;
+  animation: reveal 0.6s ease-out;
+}
+
+.hero {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 22px;
+  background: linear-gradient(145deg, rgba(15, 41, 66, 0.96), rgba(10, 31, 51, 0.96));
+  box-shadow: var(--shadow);
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(1.5rem, 2.7vw, 2.5rem);
+  letter-spacing: 0.01em;
+}
+
+.subtitle {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.97rem;
+}
+
+.panel {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 18px;
+  background: linear-gradient(160deg, rgba(18, 50, 79, 0.92), rgba(11, 33, 54, 0.92));
+  box-shadow: var(--shadow);
+  animation: rise 0.7s ease-out;
+}
+
+.controlGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.field input,
+.field select {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(8, 22, 36, 0.72);
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 0.95rem;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: 2px solid rgba(66, 214, 196, 0.45);
+  border-color: transparent;
+}
+
+.actionRow {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 10px 16px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  background: linear-gradient(135deg, #1d8ea6, #2fbf9f);
+  color: #01252b;
+  transition: transform 0.16s ease, filter 0.16s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+.btnGhost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.errorBox {
+  margin-top: 16px;
+  border: 1px solid rgba(243, 139, 139, 0.8);
+  color: #ffd2d2;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(91, 33, 33, 0.35);
+}
+
+.metrics {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.metric {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(5, 18, 31, 0.48);
+}
+
+.metricLabel {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.metricValue {
+  margin: 6px 0 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.tableFilters {
+  margin-top: 16px;
+}
+
+.filterGrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.tableWrap {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: auto;
+  background: rgba(6, 18, 30, 0.45);
+}
+
+.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1120px;
+}
+
+.dataTable th,
+.dataTable td {
+  padding: 11px 12px;
+  text-align: left;
+  border-bottom: 1px solid rgba(45, 79, 112, 0.45);
+  white-space: nowrap;
+}
+
+.dataTable th {
+  position: sticky;
+  top: 0;
+  background: #123351;
+  z-index: 1;
+  font-size: 0.88rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sortLink {
+  text-decoration: none;
+  color: var(--text);
+}
+
+.sortLink:hover {
+  color: var(--accent);
+}
+
+.resellerLink {
+  color: var(--accent-2);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.resellerLink:hover {
+  color: var(--accent);
+}
+
+.dataTable tbody tr {
+  animation: rowIn 0.35s ease both;
+}
+
+.dataTable tbody tr:nth-child(2) {
+  animation-delay: 0.04s;
+}
+.dataTable tbody tr:nth-child(3) {
+  animation-delay: 0.08s;
+}
+.dataTable tbody tr:nth-child(4) {
+  animation-delay: 0.12s;
+}
+
+.pagination {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pageTag {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(6, 18, 30, 0.6);
+}
+
+.empty {
+  color: var(--muted);
+  padding: 16px;
+}
+
+.mono {
+  font-family: var(--font-mono), Consolas, monospace;
+}
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes rowIn {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 760px) {
+  .shell {
+    padding: 14px;
+  }
+  .hero,
+  .panel {
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .actionRow {
+    flex-direction: column;
+  }
+  .btn {
+    text-align: center;
+    width: 100%;
+  }
+}

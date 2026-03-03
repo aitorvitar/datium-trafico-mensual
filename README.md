@@ -18,6 +18,20 @@ Herramienta interna de reporting VoIP con exportacion CSV.
 ## Ejecucion local
 
 - URL: `http://localhost/Datium - trafico mensual/`
+- API JSON para frontend moderno: `http://localhost/Datium - trafico mensual/api/report.php`
+
+## Frontend Next.js (nuevo)
+
+Carpeta: `frontend-next`
+
+1. Copia `frontend-next/.env.example` a `frontend-next/.env.local`.
+2. Instala dependencias:
+   - `cd frontend-next`
+   - `npm install`
+3. Arranca:
+   - `npm run dev`
+4. Abre:
+   - `http://localhost:3000`
 
 ## Seguridad
 
