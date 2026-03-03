@@ -14,7 +14,7 @@ RUN apt-get update \
     && apt-get update \
     && apt-get install -y --no-install-recommends msodbcsql18 \
     && docker-php-ext-install mysqli pdo pdo_mysql \
-    && pecl install sqlsrv pdo_sqlsrv \
+    && pecl install sqlsrv-5.12.0 pdo_sqlsrv-5.12.0 \
     && docker-php-ext-enable sqlsrv pdo_sqlsrv \
     && a2enmod rewrite headers \
     && rm -rf /var/lib/apt/lists/*
