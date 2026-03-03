@@ -44,7 +44,8 @@ function createSqlServerConnection(string $host, string $dbName, string $user, s
     }
 
     if (in_array('sqlsrv', $drivers, true)) {
-        $dsnCandidates[] = "sqlsrv:Server={$host};Database={$dbName};Encrypt=yes;TrustServerCertificate=yes";
+        // Castiphone runs with legacy TLS settings; force non-encrypted SQLSRV transport here.
+        $dsnCandidates[] = "sqlsrv:Server={$host};Database={$dbName};Encrypt=no;TrustServerCertificate=yes";
     }
 
     if (empty($dsnCandidates)) {
