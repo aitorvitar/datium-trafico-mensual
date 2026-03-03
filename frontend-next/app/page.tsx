@@ -93,6 +93,13 @@ function buildHref(input: {
   return `/?${qs.toString()}`;
 }
 
+function ensureTrailingSlash(value: string): string {
+  if (value.trim() === "") {
+    return "/";
+  }
+  return value.endsWith("/") ? value : `${value}/`;
+}
+
 function toNumber(value: unknown): number {
   if (typeof value === "number") {
     return value;
@@ -217,7 +224,9 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
   const outgoingWPage = data ? sumColumn(data.rows, "Minutos salientes (W)") : 0;
   const outgoingRPage = data ? sumColumn(data.rows, "Minutos salientes (R)") : 0;
 
-  const backendPublicBase = process.env.BACKEND_PUBLIC_BASE_URL ?? process.env.PHP_BACKEND_BASE_URL ?? "";
+  const backendPublicBase = ensureTrailingSlash(
+    process.env.BACKEND_PUBLIC_BASE_URL ?? process.env.PHP_BACKEND_BASE_URL ?? "/",
+  );
 
   return (
     <main className="shell">
@@ -256,7 +265,7 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
             </button>
             <a
               className="btn btnGhost"
-              href={`${backendPublicBase || "/"}export.php?report=${encodeURIComponent(report)}&from=${encodeURIComponent(
+              href={`${backendPublicBase}export.php?report=${encodeURIComponent(report)}&from=${encodeURIComponent(
                 from,
               )}&to=${encodeURIComponent(to)}`}
             >
@@ -366,7 +375,7 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
                       {data.columns.map((column) => {
                         if (report === "global_reseller_voz" && column === "Reseller" && Number(row.id_reseller || 0) > 0) {
                           const detailHref =
-                            `${backendPublicBase || "/"}reseller_detail.php?id_reseller=${encodeURIComponent(
+                            `${backendPublicBase}reseller_detail.php?id_reseller=${encodeURIComponent(
                               String(row.id_reseller),
                             )}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
                           return (

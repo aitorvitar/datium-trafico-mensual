@@ -33,6 +33,28 @@ Carpeta: `frontend-next`
 4. Abre:
    - `http://localhost:3000`
 
+## Docker (listo para nuevo servidor)
+
+Incluye 3 servicios:
+
+- `backend`: PHP 8.2 + Apache + `mysqli` + `pdo_sqlsrv`
+- `frontend`: Next.js 14
+- `proxy`: Nginx (entrada unica)
+
+### Arranque
+
+1. Copia `.env.example` a `.env` en la raiz del proyecto.
+2. Completa credenciales reales.
+3. Ejecuta:
+   - `docker compose build`
+   - `docker compose up -d`
+4. Abre:
+   - `http://IP_SERVIDOR:8080`
+
+Rutas:
+- UI moderna: `/`
+- Backend PHP legacy: `/legacy/`
+
 ## Seguridad
 
 - No subir `.env` a Git.
