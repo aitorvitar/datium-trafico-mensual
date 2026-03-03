@@ -7,6 +7,69 @@ require_once __DIR__ . '/queries.php';
 require_once __DIR__ . '/global_voice_report.php';
 
 /**
+ * Returns cache file path for global report data.
+ */
+function getGlobalReportCacheFile(string $reportId, string $fromDate, string $toDate): string
+{
+    $cacheDir = sys_get_temp_dir() . '/datium-report-cache';
+    if (!is_dir($cacheDir)) {
+        @mkdir($cacheDir, 0775, true);
+    }
+
+    $hash = hash('sha256', $reportId . '|' . $fromDate . '|' . $toDate);
+    return $cacheDir . '/global_' . $hash . '.json';
+}
+
+/**
+ * Loads cached global report data if not expired.
+ */
+function loadGlobalReportCache(string $reportId, string $fromDate, string $toDate, int $ttlSeconds): ?array
+{
+    $cacheFile = getGlobalReportCacheFile($reportId, $fromDate, $toDate);
+
+    if (!is_file($cacheFile)) {
+        return null;
+    }
+
+    $mtime = @filemtime($cacheFile);
+    if ($mtime === false || ($mtime + $ttlSeconds) < time()) {
+        return null;
+    }
+
+    $raw = @file_get_contents($cacheFile);
+    if ($raw === false || $raw === '') {
+        return null;
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded) || !isset($decoded['title'], $decoded['columns'], $decoded['rows'])) {
+        return null;
+    }
+
+    return $decoded;
+}
+
+/**
+ * Saves global report data to local cache for reuse.
+ */
+function saveGlobalReportCache(string $reportId, string $fromDate, string $toDate, array $reportData): void
+{
+    $cacheFile = getGlobalReportCacheFile($reportId, $fromDate, $toDate);
+    $tmpFile = $cacheFile . '.tmp';
+    $json = json_encode($reportData, JSON_UNESCAPED_UNICODE);
+
+    if ($json === false) {
+        return;
+    }
+
+    if (@file_put_contents($tmpFile, $json, LOCK_EX) === false) {
+        return;
+    }
+
+    @rename($tmpFile, $cacheFile);
+}
+
+/**
  * Validates date in Y-m-d format.
  */
 function isValidDate(string $date): bool
@@ -148,7 +211,14 @@ function runReport(string $reportId, string $fromDate, string $toDate, array $co
     $report = $reports[$reportId];
 
     if (($report['runner'] ?? '') === 'global_voice') {
-        $reportData = runGlobalVoiceReport($fromDate, $toDate);
+        $cacheTtl = max(30, envInt('GLOBAL_REPORT_CACHE_TTL', 900));
+        $reportData = loadGlobalReportCache($reportId, $fromDate, $toDate, $cacheTtl);
+
+        if ($reportData === null) {
+            $reportData = runGlobalVoiceReport($fromDate, $toDate);
+            saveGlobalReportCache($reportId, $fromDate, $toDate, $reportData);
+        }
+
         $view = applyReportControls($reportData['rows'], $reportData['columns'], $controls);
 
         return [
