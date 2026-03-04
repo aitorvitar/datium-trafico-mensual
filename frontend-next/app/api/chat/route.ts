@@ -5,235 +5,236 @@ type ChatHistoryItem = {
   content: string;
 };
 
-type Extraction = {
-  intent: "billing_query" | "unknown";
-  client: string;
-  year: number | null;
-  reseller_id: number | null;
-  by_month: boolean;
-};
-
-type BillingRow = {
-  year: number | null;
-  month: number | null;
-  venta_total: number;
-  coste_total: number;
-  beneficio_total: number;
-  margen_pct: number;
-};
-
-type BillingPayload = {
-  query: {
-    mode: "reseller" | "client_name";
-    client: string;
-    year: number;
-    by_month: boolean;
-    reseller_id: number | null;
-    reseller_name: string;
+type OpenAIToolCall = {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
   };
-  rows: BillingRow[];
-  totals: {
-    venta_total: number;
-    coste_total: number;
-    beneficio_total: number;
-    margen_pct: number;
-  };
-  notes: string[];
 };
 
-function toNumber(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
+type OpenAIMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string | null;
+  tool_calls?: OpenAIToolCall[];
+  tool_call_id?: string;
+  name?: string;
+};
 
-function toBool(value: unknown): boolean {
-  if (typeof value === "boolean") {
+type OpenAIResponse = {
+  choices?: Array<{
+    message?: OpenAIMessage;
+  }>;
+  error?: {
+    message?: string;
+  };
+};
+
+const TOOL_DEFINITIONS = [
+  {
+    type: "function",
+    function: {
+      name: "list_sources",
+      description: "List available database sources and what each source is for.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_schema",
+      description: "Get table and column metadata for one source. Use before writing SQL if unsure.",
+      parameters: {
+        type: "object",
+        properties: {
+          source: {
+            type: "string",
+            description: "One source from list_sources.",
+          },
+          table_pattern: {
+            type: "string",
+            description: "Optional LIKE-style fragment to narrow tables.",
+          },
+        },
+        required: ["source"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_query",
+      description: "Run one read-only SQL query on one source.",
+      parameters: {
+        type: "object",
+        properties: {
+          source: {
+            type: "string",
+            description: "One source from list_sources.",
+          },
+          sql: {
+            type: "string",
+            description: "A SELECT/CTE query only.",
+          },
+        },
+        required: ["source", "sql"],
+        additionalProperties: false,
+      },
+    },
+  },
+];
+
+const SYSTEM_PROMPT = [
+  "You are an internal telecom data analyst.",
+  "You must use tools for factual database answers.",
+  "Never invent table names, columns, or values.",
+  "Available sources are from tools and can include:",
+  "- db78 (MySQL voipswitch incoming CDR)",
+  "- workflow (MySQL workflowtest mapping resellers/DID)",
+  "- wholesale (MySQL voipswitch wholesale CDR)",
+  "- castiphone (SQL Server billing)",
+  "Workflow:",
+  "1) Use list_sources if needed.",
+  "2) Use get_schema when schema is uncertain.",
+  "3) Use run_query to get real data.",
+  "4) Summarize clearly in Spanish with concrete numbers and dates.",
+  "If user asks for monthly breakdown, group by month.",
+  "If user gives reseller ID, prioritize mapping/filtering by reseller ID.",
+  "When possible, include which source was used.",
+].join(" ");
+
+function clampText(value: string, maxLen = 12000): string {
+  if (value.length <= maxLen) {
     return value;
   }
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
+  return `${value.slice(0, maxLen)}\n...[truncated]`;
 }
 
-function euro(value: number): string {
-  return `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} EUR`;
+function safeJsonParse(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<string, unknown>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
 }
 
-function normalizeExtraction(raw: unknown): Extraction {
-  if (!raw || typeof raw !== "object") {
-    return { intent: "unknown", client: "", year: null, reseller_id: null, by_month: false };
+function toOpenAIConversation(history: ChatHistoryItem[], userMessage: string): OpenAIMessage[] {
+  const conversation: OpenAIMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
+
+  for (const item of history.slice(-8)) {
+    if (!item || (item.role !== "assistant" && item.role !== "user")) {
+      continue;
+    }
+    if (typeof item.content !== "string" || item.content.trim() === "") {
+      continue;
+    }
+    conversation.push({
+      role: item.role,
+      content: item.content.trim(),
+    });
   }
 
-  const candidate = raw as Record<string, unknown>;
-  const intent = candidate.intent === "billing_query" ? "billing_query" : "unknown";
-  const client = typeof candidate.client === "string" ? candidate.client.trim() : "";
-  const yearValue = Number.parseInt(String(candidate.year ?? ""), 10);
-  const year = Number.isFinite(yearValue) && yearValue >= 2000 && yearValue <= 2100 ? yearValue : null;
-  const resellerRaw = Number.parseInt(String(candidate.reseller_id ?? ""), 10);
-  const reseller_id = Number.isFinite(resellerRaw) && resellerRaw > 0 ? resellerRaw : null;
-  const by_month = toBool(candidate.by_month);
-
-  return { intent, client, year, reseller_id, by_month };
+  conversation.push({ role: "user", content: userMessage });
+  return conversation;
 }
 
-function mergeExtraction(primary: Extraction, fallback: Partial<Extraction>): Extraction {
-  const merged: Extraction = {
-    intent:
-      primary.intent !== "unknown"
-        ? primary.intent
-        : fallback.intent === "billing_query"
-          ? "billing_query"
-          : "unknown",
-    client: primary.client || (fallback.client ?? ""),
-    year: primary.year ?? fallback.year ?? null,
-    reseller_id: primary.reseller_id ?? fallback.reseller_id ?? null,
-    by_month: primary.by_month || Boolean(fallback.by_month),
-  };
-
-  if (merged.intent === "unknown" && merged.year && (merged.client || merged.reseller_id)) {
-    merged.intent = "billing_query";
-  }
-
-  return merged;
-}
-
-function extractFallback(message: string): Partial<Extraction> {
-  const text = message.trim();
-  const lowered = text.toLowerCase();
-  const yearMatch = lowered.match(/\b(20\d{2})\b/);
-  const resellerMatch = lowered.match(/\bid[_\s-]*reseller\s*=?\s*(\d{1,6})\b/) ?? lowered.match(/\breseller\s*=?\s*(\d{1,6})\b/);
-  const leadingIdMatch = lowered.match(/^\s*(\d{1,6})[\s,\t]+/);
-  const byMonth = /(mes|meses|mensual|desglos)/i.test(text);
-
-  let client = "";
-  const nameMatch =
-    text.match(/(?:facturad\w*|fcaturad\w*)\s+(.+?)\s+en\s+20\d{2}/i) ??
-    text.match(/(?:factura\w*)\s+de\s+(.+?)\s+en\s+20\d{2}/i);
-  if (nameMatch?.[1]) {
-    client = nameMatch[1].replace(/[,:]/g, " ").trim();
-  }
-
-  if (!client && leadingIdMatch && text.length > leadingIdMatch[0].length) {
-    const maybeName = text.slice(leadingIdMatch[0].length).replace(/id[_\s-]*reseller.*/i, "").trim();
-    client = maybeName.replace(/[,:]/g, " ").trim();
-  }
-
-  const resellerIdParsed = Number.parseInt(
-    resellerMatch?.[1] ?? leadingIdMatch?.[1] ?? "",
-    10,
-  );
-
-  return {
-    intent: yearMatch && (client || resellerMatch || leadingIdMatch) ? "billing_query" : "unknown",
-    client,
-    year: yearMatch ? Number.parseInt(yearMatch[1], 10) : null,
-    reseller_id: Number.isFinite(resellerIdParsed) && resellerIdParsed > 0 ? resellerIdParsed : null,
-    by_month: byMonth,
-  };
-}
-
-async function extractIntentWithOpenAI(text: string, apiKey: string, model: string): Promise<Extraction> {
+async function callOpenAI(args: {
+  apiKey: string;
+  model: string;
+  messages: OpenAIMessage[];
+}): Promise<OpenAIMessage> {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${args.apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model,
+      model: args.model,
       temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            'Devuelve solo JSON con: intent, client, year, reseller_id, by_month. intent permitido: "billing_query" o "unknown". Si piden desglose mensual, by_month=true. Si aparece id_reseller, extraelo como numero. No inventes.',
-        },
-        { role: "user", content: text },
-      ],
+      messages: args.messages,
+      tools: TOOL_DEFINITIONS,
+      tool_choice: "auto",
     }),
   });
 
-  const payload = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    error?: { message?: string };
-  };
-
+  const payload = (await response.json()) as OpenAIResponse;
   if (!response.ok) {
-    throw new Error(payload.error?.message ?? "Error llamando a OpenAI.");
+    throw new Error(payload.error?.message ?? "Error calling OpenAI.");
   }
 
-  const content = payload.choices?.[0]?.message?.content ?? "{}";
-  let parsed: unknown = {};
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    parsed = {};
+  const message = payload.choices?.[0]?.message;
+  if (!message) {
+    throw new Error("OpenAI returned no message.");
   }
 
-  return normalizeExtraction(parsed);
+  return message;
 }
 
-async function fetchBilling(params: {
-  client: string;
-  year: number;
-  resellerId: number | null;
-  byMonth: boolean;
-}): Promise<BillingPayload> {
+async function callBackendTool(
+  action: "list_sources" | "get_schema" | "run_query",
+  params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const backendBase = process.env.PHP_BACKEND_BASE_URL ?? "http://backend/";
-  const endpoint = new URL("api/chat_query.php", backendBase);
-  endpoint.searchParams.set("action", "billing_query");
-  endpoint.searchParams.set("year", String(params.year));
-  endpoint.searchParams.set("by_month", params.byMonth ? "1" : "0");
-  if (params.client) {
-    endpoint.searchParams.set("client", params.client);
-  }
-  if (params.resellerId) {
-    endpoint.searchParams.set("reseller_id", String(params.resellerId));
-  }
+  const endpoint = new URL("api/ai_tools.php", backendBase);
+  const form = new URLSearchParams();
+  form.set("action", action);
 
-  const response = await fetch(endpoint.toString(), { cache: "no-store" });
-  const payload = (await response.json()) as {
-    ok?: boolean;
-    data?: BillingPayload;
-    error?: string;
-  };
-
-  if (!response.ok || !payload.ok || !payload.data) {
-    throw new Error(payload.error ?? "No se pudo consultar facturacion.");
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    form.set(key, String(value));
   }
 
-  return payload.data;
+  const response = await fetch(endpoint.toString(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: form.toString(),
+    cache: "no-store",
+  });
+
+  const payload = (await response.json()) as Record<string, unknown>;
+  if (!response.ok) {
+    const message = typeof payload.error === "string" ? payload.error : `Tool ${action} failed.`;
+    throw new Error(message);
+  }
+
+  return payload;
 }
 
-function buildAnswer(payload: BillingPayload): string {
-  if (!payload.rows.length) {
-    return `No encuentro facturacion para ese criterio en ${payload.query.year}.`;
+async function executeToolCall(toolCall: OpenAIToolCall): Promise<string> {
+  const name = toolCall.function.name;
+  const args = safeJsonParse(toolCall.function.arguments ?? "{}");
+
+  if (name !== "list_sources" && name !== "get_schema" && name !== "run_query") {
+    return JSON.stringify({
+      ok: false,
+      error: `Unknown tool: ${name}`,
+    });
   }
 
-  const head =
-    payload.query.mode === "reseller"
-      ? `Reseller ${payload.query.reseller_id}${payload.query.reseller_name ? ` (${payload.query.reseller_name})` : ""}`
-      : `Cliente "${payload.query.client}"`;
-
-  const summary = `Facturacion ${payload.query.year}: venta ${euro(payload.totals.venta_total)}, coste ${euro(
-    payload.totals.coste_total,
-  )}, beneficio ${euro(payload.totals.beneficio_total)}, margen ${payload.totals.margen_pct.toFixed(2)}%.`;
-
-  if (!payload.query.by_month) {
-    return `${head}. ${summary} Fuente: castiphone (Facturas + FacturasProductos + Clientes).`;
+  try {
+    const result = await callBackendTool(name, args);
+    return clampText(JSON.stringify(result));
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      error: error instanceof Error ? error.message : "Tool execution error.",
+    });
   }
-
-  const monthLines = payload.rows
-    .map((row) => {
-      const month = Number(row.month ?? 0);
-      const monthLabel = `${payload.query.year}-${String(month).padStart(2, "0")}`;
-      return `${monthLabel}: ${euro(toNumber(row.venta_total))}`;
-    })
-    .join(" | ");
-
-  return `${head}. ${summary} Desglose mensual: ${monthLines}. Fuente: castiphone (con mapeo workflow si aplica).`;
 }
 
 export async function POST(request: NextRequest) {
@@ -244,15 +245,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, error: "La consulta esta vacia." }, { status: 400 });
     }
 
-    const history = Array.isArray(body.history) ? body.history : [];
-    const recentUserContext = history
-      .filter((item) => item && item.role === "user" && typeof item.content === "string")
-      .slice(-4)
-      .map((item) => item.content.trim())
-      .filter(Boolean)
-      .join("\n");
-    const contextText = recentUserContext ? `${recentUserContext}\n${message}` : message;
-
     const apiKey = String(process.env.OPENAI_API_KEY ?? "").trim();
     if (!apiKey) {
       return NextResponse.json(
@@ -262,28 +254,48 @@ export async function POST(request: NextRequest) {
     }
 
     const model = String(process.env.OPENAI_MODEL ?? "gpt-4.1-mini").trim();
-    const modelExtraction = await extractIntentWithOpenAI(contextText, apiKey, model);
-    const fallbackExtraction = extractFallback(contextText);
-    const extraction = mergeExtraction(modelExtraction, fallbackExtraction);
+    const history = Array.isArray(body.history) ? body.history : [];
+    const messages = toOpenAIConversation(history, message);
 
-    if (extraction.intent !== "billing_query" || !extraction.year || (!extraction.client && !extraction.reseller_id)) {
-      return NextResponse.json({
-        ok: true,
-        answer:
-          'Puedo responder consultas de facturacion por anio. Ejemplos: "que ha facturado Telcat en 2026, desglosado en meses" o "id_reseller=26 en 2026".',
+    for (let step = 0; step < 10; step += 1) {
+      const assistantMessage = await callOpenAI({
+        apiKey,
+        model,
+        messages,
       });
-    }
 
-    const payload = await fetchBilling({
-      client: extraction.client,
-      year: extraction.year,
-      resellerId: extraction.reseller_id,
-      byMonth: extraction.by_month,
-    });
+      messages.push({
+        role: "assistant",
+        content: assistantMessage.content ?? null,
+        tool_calls: assistantMessage.tool_calls,
+      });
+
+      const toolCalls = assistantMessage.tool_calls ?? [];
+      if (toolCalls.length === 0) {
+        const answer = String(assistantMessage.content ?? "").trim();
+        if (!answer) {
+          return NextResponse.json({
+            ok: true,
+            answer: "No he podido generar respuesta. Reformula la consulta indicando fuente o periodo.",
+          });
+        }
+        return NextResponse.json({ ok: true, answer });
+      }
+
+      for (const call of toolCalls) {
+        const toolContent = await executeToolCall(call);
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          name: call.function.name,
+          content: toolContent,
+        });
+      }
+    }
 
     return NextResponse.json({
       ok: true,
-      answer: buildAnswer(payload),
+      answer: "Se alcanzo el limite de iteraciones. Intenta una consulta mas concreta.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Error inesperado en Chat IA.";

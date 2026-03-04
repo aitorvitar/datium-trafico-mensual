@@ -17,7 +17,7 @@ const INITIAL_MESSAGES: ChatMessage[] = [
   {
     role: "assistant",
     content:
-      'Chat IA listo. Ejemplos: "que ha facturado Telcat en 2026, desglosado en meses" o "id_reseller=26 en 2026".',
+      'Chat IA listo. Ahora consulta fuentes reales (db78, workflow, wholesale y castiphone). Ejemplo: "que ha facturado Telcat en 2026, desglosado en meses".',
   },
 ];
 

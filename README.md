@@ -17,6 +17,9 @@ Herramienta interna de reporting VoIP con exportacion CSV.
 4. Para Chat IA, añade en `.env`:
    - `OPENAI_API_KEY=...`
    - `OPENAI_MODEL=gpt-4.1-mini` (opcional)
+5. Recomendado para Chat IA:
+   - usuarios de BBDD solo lectura
+   - limitar permisos a tablas necesarias
 
 ## Ejecucion local
 
@@ -61,6 +64,7 @@ Incluye 3 servicios:
 Rutas:
 - UI moderna: `/`
 - Backend PHP legacy: `/legacy/`
+- Herramientas IA backend: `/legacy/api/ai_tools.php`
 
 ## Seguridad
 
