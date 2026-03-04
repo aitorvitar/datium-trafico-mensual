@@ -380,6 +380,25 @@ function extractClient(normalizedText: string, year: number): string {
   return sanitizeClientCandidate(normalizedText);
 }
 
+function extractClientLoose(normalizedText: string): string {
+  const patterns = [
+    /(?:^|\s)y\s+para\s+(.+)$/i,
+    /(?:^|\s)para\s+(.+)$/i,
+    /(?:^|\s)de\s+(.+)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = normalizedText.match(pattern);
+    if (match && match[1]) {
+      const value = sanitizeClientCandidate(match[1]);
+      if (value !== "") {
+        return value;
+      }
+    }
+  }
+
+  return sanitizeClientCandidate(normalizedText);
+}
+
 function extractBillingIntent(message: string): BillingIntent | null {
   const normalized = normalizeIntentText(message);
   if (!isLikelyBillingRequest(normalized)) {
@@ -413,6 +432,51 @@ function extractBillingIntent(message: string): BillingIntent | null {
     byMonth,
     monthFilter,
   };
+}
+
+function extractBillingIntentFromHistory(history: ChatHistoryItem[]): BillingIntent | null {
+  const recentUsers = history
+    .slice(-10)
+    .filter((item) => item.role === "user" && typeof item.content === "string")
+    .map((item) => item.content.trim())
+    .filter((value) => value !== "");
+
+  for (let i = recentUsers.length - 1; i >= 0; i -= 1) {
+    const intent = extractBillingIntent(recentUsers[i]);
+    if (intent !== null) {
+      return intent;
+    }
+  }
+
+  return null;
+}
+
+function extractFollowUpBillingIntent(history: ChatHistoryItem[], message: string): BillingIntent | null {
+  const baseIntent = extractBillingIntentFromHistory(history);
+  if (baseIntent === null) {
+    return null;
+  }
+
+  const normalized = normalizeIntentText(message);
+  const directResellerId = extractResellerId(normalized);
+  const directYear = extractYear(normalized);
+  const directMonth = extractMonth(normalized);
+  const wantsMonth = /\bmes(es)?\b|\bmensual\b|\bdesglosado\b|\btotal\b/.test(normalized);
+  const directClient = extractClientLoose(normalized);
+
+  const intent: BillingIntent = {
+    year: directYear > 0 ? directYear : baseIntent.year,
+    client: directClient !== "" ? directClient : baseIntent.client,
+    resellerId: directResellerId > 0 ? directResellerId : 0,
+    byMonth: baseIntent.byMonth || wantsMonth || directMonth !== null,
+    monthFilter: directMonth ?? null,
+  };
+
+  if (intent.resellerId <= 0 && intent.client === "") {
+    return null;
+  }
+
+  return intent;
 }
 
 function buildBillingContext(history: ChatHistoryItem[], currentMessage: string): string {
@@ -676,6 +740,9 @@ export async function POST(request: NextRequest) {
     let billingIntent = extractBillingIntent(message);
     if (billingIntent === null && likelyBilling) {
       billingIntent = extractBillingIntent(buildBillingContext(history, message));
+    }
+    if (billingIntent === null) {
+      billingIntent = extractFollowUpBillingIntent(history, message);
     }
     if (billingIntent !== null) {
       if (directResellerId > 0) {
