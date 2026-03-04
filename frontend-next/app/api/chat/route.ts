@@ -149,6 +149,14 @@ const SYSTEM_PROMPT = [
   "When possible, include which source was used.",
 ].join(" ");
 
+const MAX_TOOL_STEPS = (() => {
+  const raw = Number(process.env.OPENAI_TOOL_MAX_STEPS ?? "20");
+  if (!Number.isFinite(raw)) {
+    return 20;
+  }
+  return Math.min(40, Math.max(6, Math.floor(raw)));
+})();
+
 function clampText(value: string, maxLen = 12000): string {
   if (value.length <= maxLen) {
     return value;
@@ -718,7 +726,7 @@ export async function POST(request: NextRequest) {
 
     const messages = toOpenAIConversation(history, message);
 
-    for (let step = 0; step < 10; step += 1) {
+    for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
       const assistantMessage = await callOpenAI({
         apiKey,
         model,
@@ -754,9 +762,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (likelyBilling) {
+      const fallbackIntent = extractBillingIntent(buildBillingContext(history, message));
+      if (fallbackIntent !== null) {
+        try {
+          const billingPayload = await callBillingQuery(fallbackIntent);
+          return NextResponse.json({
+            ok: true,
+            answer: buildBillingAnswer(fallbackIntent, billingPayload),
+          });
+        } catch {
+          // Keep generic fallback below if deterministic query also fails.
+        }
+      }
+    }
+
     return NextResponse.json({
       ok: true,
-      answer: "Se alcanzo el limite de iteraciones. Intenta una consulta mas concreta.",
+      answer: `Se alcanzo el limite de iteraciones (${MAX_TOOL_STEPS}). Intenta una consulta mas concreta.`,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Error inesperado en Chat IA.";
