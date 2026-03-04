@@ -164,7 +164,7 @@ const MAX_TOOL_STEPS = (() => {
   }
   return Math.min(40, Math.max(6, Math.floor(raw)));
 })();
-const DETERMINISTIC_BILLING_ENABLED = String(process.env.CHAT_BILLING_DETERMINISTIC ?? "1") === "1";
+const DETERMINISTIC_BILLING_ENABLED = String(process.env.CHAT_BILLING_DETERMINISTIC ?? "0") === "1";
 
 function clampText(value: string, maxLen = 12000): string {
   if (value.length <= maxLen) {

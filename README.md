@@ -14,9 +14,10 @@ Herramienta interna de reporting VoIP con exportacion CSV.
 1. Copia `.env.example` a `.env`.
 2. Rellena usuarios/passwords.
 3. En XAMPP, reinicia Apache.
-4. Para Chat IA, añade en `.env`:
+4. Para Chat IA, anade en `.env`:
    - `OPENAI_API_KEY=...`
    - `OPENAI_MODEL=gpt-4.1-mini` (opcional)
+   - `CHAT_BILLING_DETERMINISTIC=0` (IA libre) o `1` (facturacion estable)
 5. Recomendado para Chat IA:
    - usuarios de BBDD solo lectura
    - limitar permisos a tablas necesarias
@@ -34,6 +35,7 @@ Carpeta: `frontend-next`
 2. En `frontend-next/.env.local`, define tambien:
    - `OPENAI_API_KEY=...`
    - `OPENAI_MODEL=gpt-4.1-mini` (opcional)
+   - `CHAT_BILLING_DETERMINISTIC=0` (IA libre) o `1` (facturacion estable)
 3. Instala dependencias:
    - `cd frontend-next`
    - `npm install`
