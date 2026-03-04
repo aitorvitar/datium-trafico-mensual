@@ -209,7 +209,7 @@ const SYSTEM_PROMPT = [
   "For reseller-name requests, resolve id in workflow with a LIKE on razonsocial, ask confirmation if multiple matches.",
   "For reseller billing, do not filter castiphone by customer name; filter by c.idReseller using the resolved workflow reseller id.",
   "For billing in castiphone, prefer joining Facturas and FacturasProductos by [Año], Serie, Numero.",
-  "For billing by reseller in castiphone, join Clientes and filter by c.idReseller.",
+  "For billing by reseller in castiphone, join Clientes and filter by c.CodigoPlataforma = reseller_id.",
   "Available sources are from tools and can include:",
   "- db78 (MySQL voipswitch incoming CDR)",
   "- workflow (MySQL workflowtest mapping resellers/DID)",
