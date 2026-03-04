@@ -172,79 +172,227 @@ function formatPercent(value: number): string {
   }).format(value)}%`;
 }
 
-function extractBillingIntent(message: string): BillingIntent | null {
-  const text = message.trim();
-  if (!/factur|venta|coste|beneficio|margen/i.test(text)) {
-    return null;
+function stripAccents(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeIntentText(value: string): string {
+  let text = stripAccents(value.toLowerCase());
+  const replacements: Array<[RegExp, string]> = [
+    [/\bfcaturacion\b|\bfactruacion\b|\bfaturacion\b|\bfacturacion\b|\bfacturaccion\b/g, "facturacion"],
+    [/\bdesglozado\b|\bdesglosao\b|\bdesglosada\b/g, "desglosado"],
+    [/\bscaame\b|\bscame\b|\bsacame\b/g, "pasame"],
+    [/\bid[_\s-]*reseler\b/g, "id_reseller"],
+  ];
+  for (const [pattern, replacement] of replacements) {
+    text = text.replace(pattern, replacement);
   }
 
-  const yearMatch = text.match(/\b(20\d{2})\b/);
-  if (!yearMatch) {
-    return null;
+  return text.replace(/[^a-z0-9_]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function tokenize(value: string): string[] {
+  return value
+    .split(" ")
+    .map((item) => item.trim())
+    .filter((item) => item !== "");
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) {
+    return 0;
   }
-  const year = Number(yearMatch[1]);
+  if (a.length === 0) {
+    return b.length;
+  }
+  if (b.length === 0) {
+    return a.length;
+  }
+
+  const matrix: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i += 1) {
+    matrix[i][0] = i;
+  }
+  for (let j = 0; j <= b.length; j += 1) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+    }
+  }
+
+  return matrix[a.length][b.length];
+}
+
+function fuzzyTokenMatch(token: string, target: string, maxDistance = 2): boolean {
+  if (token === target) {
+    return true;
+  }
+  if (Math.abs(token.length - target.length) > maxDistance) {
+    return false;
+  }
+  return levenshteinDistance(token, target) <= maxDistance;
+}
+
+function extractYear(normalizedText: string): number {
+  const match = normalizedText.match(/\b(20\d{2})\b/);
+  if (!match) {
+    return 0;
+  }
+  const year = Number(match[1]);
   if (!Number.isFinite(year) || year < 2000 || year > 2100) {
+    return 0;
+  }
+  return year;
+}
+
+function extractResellerId(normalizedText: string): number {
+  const match =
+    normalizedText.match(/\bid_reseller\s*[:=]?\s*(\d+)\b/) ?? normalizedText.match(/\breseller\s*[:=]?\s*(\d+)\b/);
+  if (!match) {
+    return 0;
+  }
+  return Number(match[1]);
+}
+
+function extractMonth(normalizedText: string): number | null {
+  const tokens = tokenize(normalizedText);
+  const monthByName: Record<string, number> = {
+    enero: 1,
+    febrero: 2,
+    marzo: 3,
+    abril: 4,
+    mayo: 5,
+    junio: 6,
+    julio: 7,
+    agosto: 8,
+    septiembre: 9,
+    octubre: 10,
+    noviembre: 11,
+    diciembre: 12,
+    setiembre: 9,
+  };
+
+  for (const [monthName, monthNumber] of Object.entries(monthByName)) {
+    if (tokens.some((token) => fuzzyTokenMatch(token, monthName, 2))) {
+      return monthNumber;
+    }
+  }
+
+  return null;
+}
+
+function isLikelyBillingRequest(normalizedText: string): boolean {
+  const tokens = tokenize(normalizedText);
+  const billingKeywords = ["facturacion", "factura", "facturar", "venta", "coste", "beneficio", "margen"];
+  for (const keyword of billingKeywords) {
+    if (tokens.some((token) => fuzzyTokenMatch(token, keyword, 2))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function sanitizeClientCandidate(candidate: string): string {
+  const text = normalizeIntentText(candidate);
+  const stopwords = new Set([
+    "de",
+    "del",
+    "en",
+    "el",
+    "la",
+    "los",
+    "las",
+    "por",
+    "cada",
+    "mes",
+    "meses",
+    "mensual",
+    "desglosado",
+    "y",
+    "total",
+    "facturacion",
+    "factura",
+    "facturar",
+    "venta",
+    "coste",
+    "beneficio",
+    "margen",
+    "reseller",
+    "id_reseller",
+    "pasame",
+  ]);
+  const months = new Set([
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+    "setiembre",
+  ]);
+
+  return tokenize(text)
+    .filter((token) => !stopwords.has(token))
+    .filter((token) => !months.has(token))
+    .filter((token) => !/^\d+$/.test(token))
+    .join(" ")
+    .trim();
+}
+
+function extractClient(normalizedText: string, year: number): string {
+  if (year <= 0) {
+    return "";
+  }
+
+  const regexes = [
+    new RegExp(`(?:facturacion|factura|facturar|venta|coste|beneficio|margen)\\s+(.+?)\\s+(?:de|del|en\\s+)?${year}\\b`, "i"),
+    new RegExp(`(?:de|del)\\s+(.+?)\\s+(?:de|del|en\\s+)?${year}\\b`, "i"),
+  ];
+
+  for (const regex of regexes) {
+    const match = normalizedText.match(regex);
+    if (match && match[1]) {
+      const parsed = sanitizeClientCandidate(match[1]);
+      if (parsed !== "") {
+        return parsed;
+      }
+    }
+  }
+
+  return sanitizeClientCandidate(normalizedText);
+}
+
+function extractBillingIntent(message: string): BillingIntent | null {
+  const normalized = normalizeIntentText(message);
+  if (!isLikelyBillingRequest(normalized)) {
     return null;
   }
 
-  const monthMap: Array<[RegExp, number]> = [
-    [/\benero\b/i, 1],
-    [/\bfebrero\b/i, 2],
-    [/\bmarzo\b/i, 3],
-    [/\babril\b/i, 4],
-    [/\bmayo\b/i, 5],
-    [/\bjunio\b/i, 6],
-    [/\bjulio\b/i, 7],
-    [/\bagosto\b/i, 8],
-    [/\bseptiembre\b/i, 9],
-    [/\boctubre\b/i, 10],
-    [/\bnoviembre\b/i, 11],
-    [/\bdiciembre\b/i, 12],
-  ];
-  let monthFilter: number | null = null;
-  for (const [regex, monthNumber] of monthMap) {
-    if (regex.test(text)) {
-      monthFilter = monthNumber;
-      break;
-    }
+  const year = extractYear(normalized);
+  if (year <= 0) {
+    return null;
   }
 
+  const monthFilter = extractMonth(normalized);
   const byMonth =
-    monthFilter !== null || /\bmes(es)?\b/i.test(text) || /desglosad[oa]/i.test(text) || /mensual/i.test(text);
+    monthFilter !== null ||
+    /\bmes(es)?\b/.test(normalized) ||
+    /\bdesglosado\b/.test(normalized) ||
+    /\bmensual\b/.test(normalized) ||
+    /\btotal\b/.test(normalized);
 
-  let resellerId = 0;
-  const resellerIdMatch =
-    text.match(/\bid[_\s-]*reseller\s*[:=]?\s*(\d+)\b/i) ?? text.match(/\breseller\s*[:=]?\s*(\d+)\b/i);
-  if (resellerIdMatch) {
-    resellerId = Number(resellerIdMatch[1]);
-  }
-
-  let client = "";
-  const namedPatterns = [
-    /factur(?:aci[oó]n)?\s+de\s+(.+?)\s+(?:del|de)\s+20\d{2}/i,
-    /ha\s+facturado\s+(.+?)\s+(?:en|del|de)\s+20\d{2}/i,
-    /pasame\s+factur(?:aci[oó]n)?\s+de\s+(.+?)\s+(?:en|del|de)\s+20\d{2}/i,
-  ];
-  for (const pattern of namedPatterns) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      client = match[1].trim();
-      break;
-    }
-  }
-
-  if (client === "") {
-    const generic = text.match(/\bde\s+(.+?)\s+(?:en|del|de)\s+20\d{2}/i);
-    if (generic && generic[1]) {
-      client = generic[1].trim();
-    }
-  }
-
-  client = client
-    .replace(/\b(febrero|enero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/gi, "")
-    .replace(/\bde\b\s*$/i, "")
-    .replace(/[.,;:!?]+$/g, "")
-    .trim();
+  const resellerId = extractResellerId(normalized);
+  const client = extractClient(normalized, year);
 
   if (resellerId <= 0 && client === "") {
     return null;
@@ -510,16 +658,47 @@ export async function POST(request: NextRequest) {
     const model = String(process.env.OPENAI_MODEL ?? "gpt-4.1-mini").trim();
     const history = Array.isArray(body.history) ? body.history : [];
 
+    const normalizedMessage = normalizeIntentText(message);
+    const directResellerId = extractResellerId(normalizedMessage);
+    const likelyBilling =
+      isLikelyBillingRequest(normalizedMessage) ||
+      directResellerId > 0 ||
+      /\b(factur|venta|coste|beneficio|margen)\b/i.test(normalizedMessage);
+
     let billingIntent = extractBillingIntent(message);
-    if (billingIntent === null && /\bid[_\s-]*reseller\b|\breseller\b/i.test(message)) {
+    if (billingIntent === null && likelyBilling) {
       billingIntent = extractBillingIntent(buildBillingContext(history, message));
-      if (billingIntent !== null && billingIntent.resellerId <= 0) {
-        const idMatch =
-          message.match(/\bid[_\s-]*reseller\s*[:=]?\s*(\d+)\b/i) ?? message.match(/\breseller\s*[:=]?\s*(\d+)\b/i);
-        if (idMatch) {
-          billingIntent.resellerId = Number(idMatch[1]);
-        }
+    }
+    if (billingIntent !== null) {
+      if (directResellerId > 0) {
+        billingIntent.resellerId = directResellerId;
       }
+
+      const directYear = extractYear(normalizedMessage);
+      if (directYear > 0) {
+        billingIntent.year = directYear;
+      }
+
+      const directMonth = extractMonth(normalizedMessage);
+      if (directMonth !== null) {
+        billingIntent.monthFilter = directMonth;
+        billingIntent.byMonth = true;
+      }
+      if (/\bmes(es)?\b|\bmensual\b|\bdesglosado\b|\btotal\b/.test(normalizedMessage)) {
+        billingIntent.byMonth = true;
+      }
+
+      const directClient = extractClient(normalizedMessage, billingIntent.year);
+      if (directClient !== "") {
+        billingIntent.client = directClient;
+      }
+    }
+    if (billingIntent === null && likelyBilling) {
+      return NextResponse.json({
+        ok: true,
+        answer:
+          "Para consultar facturacion necesito al menos anio y cliente o id_reseller. Ejemplo: facturacion Telcat 2026 por meses.",
+      });
     }
     if (billingIntent !== null) {
       try {
@@ -584,3 +763,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
+
