@@ -76,6 +76,69 @@ type BillingPayload = {
   error?: string;
 };
 
+type BillingAnalyzePayload = {
+  ok?: boolean;
+  data?: {
+    query?: {
+      from_date?: string;
+      to_date?: string;
+      by_month?: boolean;
+      input_names?: string[];
+      input_ids?: number[];
+    };
+    resolved?: Array<{
+      id: number;
+      name: string;
+      input?: string;
+      score?: number;
+      rows?: BillingRow[];
+      totals?: {
+        venta_total?: number;
+        coste_total?: number;
+        beneficio_total?: number;
+        margen_pct?: number;
+      };
+    }>;
+    unresolved?: Array<{
+      input_name?: string;
+      candidates?: Array<{ id: number; name: string; score?: number }>;
+    }>;
+    ranking_by_venta?: Array<{
+      id: number;
+      name: string;
+      venta_total?: number;
+      beneficio_total?: number;
+      coste_total?: number;
+      margen_pct?: number;
+    }>;
+    ranking_by_beneficio?: Array<{
+      id: number;
+      name: string;
+      venta_total?: number;
+      beneficio_total?: number;
+      coste_total?: number;
+      margen_pct?: number;
+    }>;
+    notes?: string[];
+  };
+  error?: string;
+};
+
+type InterpretedBillingIntent = {
+  intent: "compare" | "single" | "trend" | "unknown";
+  reseller_names: string[];
+  reseller_ids: number[];
+  date_from: string;
+  date_to: string;
+  by_month: boolean;
+  compare_billing: boolean;
+  compare_profit: boolean;
+  trend: boolean;
+  clarification_question: string;
+  needs_clarification: boolean;
+  confidence: number;
+};
+
 const TOOL_DEFINITIONS = [
   {
     type: "function",
@@ -574,6 +637,201 @@ async function callBillingQuery(intent: BillingIntent): Promise<BillingPayload> 
   return payload;
 }
 
+async function callBillingAnalyze(params: {
+  resellerNames: string[];
+  resellerIds: number[];
+  dateFrom: string;
+  dateTo: string;
+  byMonth: boolean;
+}): Promise<BillingAnalyzePayload> {
+  const backendBase = process.env.PHP_BACKEND_BASE_URL ?? "http://backend/";
+  const endpoint = new URL("api/chat_query.php", backendBase);
+  const form = new URLSearchParams();
+  form.set("action", "billing_analyze");
+  form.set("date_from", params.dateFrom);
+  form.set("date_to", params.dateTo);
+  form.set("by_month", params.byMonth ? "1" : "0");
+  form.set("reseller_names_json", JSON.stringify(params.resellerNames));
+  form.set("reseller_ids_json", JSON.stringify(params.resellerIds));
+
+  const response = await fetch(endpoint.toString(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: form.toString(),
+    cache: "no-store",
+  });
+
+  const payload = (await response.json()) as BillingAnalyzePayload;
+  if (!response.ok) {
+    throw new Error(payload.error ?? "Error en billing_analyze.");
+  }
+  return payload;
+}
+
+function buildConversationText(history: ChatHistoryItem[], currentMessage: string): string {
+  const lines: string[] = [];
+  for (const item of history.slice(-10)) {
+    if (!item || (item.role !== "assistant" && item.role !== "user")) {
+      continue;
+    }
+    const text = String(item.content ?? "").trim();
+    if (text === "") {
+      continue;
+    }
+    lines.push(`${item.role === "user" ? "Usuario" : "Asistente"}: ${text}`);
+  }
+  lines.push(`Usuario: ${currentMessage}`);
+  return lines.join("\n");
+}
+
+function normalizeInterpretedIntent(value: Record<string, unknown>): InterpretedBillingIntent {
+  const namesRaw = Array.isArray(value.reseller_names) ? value.reseller_names : [];
+  const idsRaw = Array.isArray(value.reseller_ids) ? value.reseller_ids : [];
+  const resellerNames = namesRaw.map((v) => String(v).trim()).filter((v) => v !== "");
+  const resellerIds = idsRaw.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0).map((v) => Math.floor(v));
+  const intent = String(value.intent ?? "unknown").toLowerCase();
+  const allowedIntent = intent === "compare" || intent === "single" || intent === "trend" ? intent : "unknown";
+  const confidenceRaw = Number(value.confidence ?? 0);
+
+  return {
+    intent: allowedIntent,
+    reseller_names: resellerNames,
+    reseller_ids: resellerIds,
+    date_from: String(value.date_from ?? "").trim(),
+    date_to: String(value.date_to ?? "").trim(),
+    by_month: Boolean(value.by_month ?? true),
+    compare_billing: Boolean(value.compare_billing ?? false),
+    compare_profit: Boolean(value.compare_profit ?? false),
+    trend: Boolean(value.trend ?? false),
+    clarification_question: String(value.clarification_question ?? "").trim(),
+    needs_clarification: Boolean(value.needs_clarification ?? false),
+    confidence: Number.isFinite(confidenceRaw) ? confidenceRaw : 0,
+  };
+}
+
+async function interpretBillingIntentWithAI(args: {
+  apiKey: string;
+  model: string;
+  history: ChatHistoryItem[];
+  message: string;
+}): Promise<InterpretedBillingIntent | null> {
+  const transcript = buildConversationText(args.history, args.message);
+  const system = [
+    "Eres un parser de intenciones para facturacion de resellers.",
+    "Devuelve SOLO JSON valido.",
+    "Interpreta lenguaje natural y contexto de los ultimos mensajes.",
+    "Si el usuario pregunta comparativas, marca compare_billing/compare_profit.",
+    "Si pide evolucion, marca trend=true.",
+    "Si faltan fechas, usa contexto previo; si aun falta, needs_clarification=true y escribe clarification_question.",
+    "Fechas: date_from y date_to en formato YYYY-MM-DD. date_to es exclusivo.",
+    "Para enero 2026 -> from 2026-01-01, to 2026-02-01.",
+    "Para 'de noviembre 2025 a febrero 2026' -> from 2025-11-01, to 2026-03-01.",
+    "Si hay nombres de reseller, ponerlos en reseller_names.",
+    "Si hay ids, ponerlos en reseller_ids.",
+    "Esquema JSON:",
+    '{"intent":"compare|single|trend|unknown","reseller_names":[],"reseller_ids":[],"date_from":"","date_to":"","by_month":true,"compare_billing":false,"compare_profit":false,"trend":false,"needs_clarification":false,"clarification_question":"","confidence":0.0}',
+  ].join(" ");
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${args.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: args.model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: transcript },
+      ],
+    }),
+  });
+
+  const payload = (await response.json()) as OpenAIResponse;
+  if (!response.ok) {
+    return null;
+  }
+  const content = String(payload.choices?.[0]?.message?.content ?? "").trim();
+  if (content === "") {
+    return null;
+  }
+  const parsed = safeJsonParse(content);
+  return normalizeInterpretedIntent(parsed);
+}
+
+function isIsoDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function buildBillingAnalyzeAnswer(intent: InterpretedBillingIntent, payload: BillingAnalyzePayload): string {
+  const data = payload.data;
+  if (!payload.ok || !data) {
+    return "No he podido obtener datos de facturacion.";
+  }
+
+  const resolved = Array.isArray(data.resolved) ? data.resolved : [];
+  const unresolved = Array.isArray(data.unresolved) ? data.unresolved : [];
+
+  if (resolved.length === 0) {
+    const unresolvedTop = unresolved[0];
+    const candidates = Array.isArray(unresolvedTop?.candidates) ? unresolvedTop?.candidates ?? [] : [];
+    if (candidates.length > 0) {
+      const lines = candidates.slice(0, 3).map((c, i) => `${i + 1}. [${c.id}] ${c.name}`);
+      return [
+        `No encuentro reseller exacto para "${unresolvedTop?.input_name ?? "consulta"}".`,
+        "Posibles coincidencias:",
+        ...lines,
+        `Indica uno, por ejemplo: "usa ${candidates[0].id}".`,
+      ].join("\n");
+    }
+    return "No he podido resolver el reseller consultado.";
+  }
+
+  const rankingVenta = Array.isArray(data.ranking_by_venta) ? data.ranking_by_venta : [];
+  const rankingBeneficio = Array.isArray(data.ranking_by_beneficio) ? data.ranking_by_beneficio : [];
+  const topVenta = rankingVenta[0];
+  const topBeneficio = rankingBeneficio[0];
+  const fromDate = String(data.query?.from_date ?? intent.date_from);
+  const toDate = String(data.query?.to_date ?? intent.date_to);
+
+  const lines: string[] = [];
+  lines.push(`Periodo: ${fromDate} a ${toDate} (to exclusivo).`);
+  if (resolved.length >= 2 || intent.compare_billing || intent.compare_profit || intent.intent === "compare") {
+    if (topVenta) {
+      lines.push(`Factura mas: ${topVenta.name} (${formatEuros(Number(topVenta.venta_total ?? 0))}).`);
+    }
+    if (topBeneficio) {
+      lines.push(`Gana mas dinero: ${topBeneficio.name} (${formatEuros(Number(topBeneficio.beneficio_total ?? 0))}).`);
+    }
+  }
+
+  for (const item of resolved) {
+    const totals = item.totals ?? {};
+    lines.push(
+      `- ${item.name}: venta ${formatEuros(Number(totals.venta_total ?? 0))}, coste ${formatEuros(Number(totals.coste_total ?? 0))}, beneficio ${formatEuros(Number(totals.beneficio_total ?? 0))}, margen ${formatPercent(Number(totals.margen_pct ?? 0))}`,
+    );
+  }
+
+  if (intent.trend && resolved.length > 0) {
+    const first = resolved[0];
+    const rows = Array.isArray(first.rows) ? first.rows : [];
+    if (rows.length >= 2) {
+      const firstRow = rows[0];
+      const lastRow = rows[rows.length - 1];
+      const firstBeneficio = Number(firstRow.beneficio_total ?? 0);
+      const lastBeneficio = Number(lastRow.beneficio_total ?? 0);
+      const trendText = lastBeneficio >= firstBeneficio ? "ha mejorado" : "ha empeorado";
+      lines.push(`Evolucion de ${first.name}: ${trendText} (beneficio inicial ${formatEuros(firstBeneficio)} vs final ${formatEuros(lastBeneficio)}).`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function buildBillingAnswer(intent: BillingIntent, payload: BillingPayload): string {
   const data = payload.data;
   if (!payload.ok || !data) {
@@ -827,6 +1085,39 @@ export async function POST(request: NextRequest) {
 
     const model = String(process.env.OPENAI_MODEL ?? "gpt-4.1-mini").trim();
     const history = Array.isArray(body.history) ? body.history : [];
+
+    const interpretedIntent = await interpretBillingIntentWithAI({
+      apiKey,
+      model,
+      history,
+      message,
+    });
+    if (interpretedIntent !== null) {
+      const hasReseller = interpretedIntent.reseller_names.length > 0 || interpretedIntent.reseller_ids.length > 0;
+      const hasDates = isIsoDate(interpretedIntent.date_from) && isIsoDate(interpretedIntent.date_to);
+
+      if (interpretedIntent.needs_clarification && interpretedIntent.clarification_question !== "") {
+        return NextResponse.json({ ok: true, answer: interpretedIntent.clarification_question });
+      }
+
+      if (hasReseller && hasDates && interpretedIntent.intent !== "unknown" && interpretedIntent.confidence >= 0.45) {
+        try {
+          const analyzed = await callBillingAnalyze({
+            resellerNames: interpretedIntent.reseller_names,
+            resellerIds: interpretedIntent.reseller_ids,
+            dateFrom: interpretedIntent.date_from,
+            dateTo: interpretedIntent.date_to,
+            byMonth: interpretedIntent.by_month,
+          });
+          return NextResponse.json({
+            ok: true,
+            answer: buildBillingAnalyzeAnswer(interpretedIntent, analyzed),
+          });
+        } catch {
+          // Falls through to existing deterministic/tool logic.
+        }
+      }
+    }
 
     const normalizedMessage = normalizeIntentText(message);
     const directResellerId = extractResellerId(normalizedMessage);
