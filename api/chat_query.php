@@ -329,24 +329,35 @@ function findWorkflowResellerCandidates(mysqli $connection, string $input, int $
             if ($raw === '') {
                 continue;
             }
-            $normalized = normalizeForMatch($raw);
-            if ($normalized === '') {
-                continue;
+            $nameParts = preg_split('/[^[:alnum:]]+/u', $raw) ?: [];
+            $variants = [$raw];
+            foreach ($nameParts as $part) {
+                $part = trim((string)$part);
+                if ($part !== '') {
+                    $variants[] = $part;
+                }
             }
 
-            $score = 0.0;
-            if ($normalized === $target) {
-                $score = 100.0;
-            } elseif (str_contains($normalized, $target) || str_contains($target, $normalized)) {
-                $score = 86.0;
-            } else {
-                similar_text($normalized, $target, $percent);
-                $score = (float)$percent;
-            }
+            foreach ($variants as $variant) {
+                $normalized = normalizeForMatch($variant);
+                if ($normalized === '') {
+                    continue;
+                }
 
-            if ($score > $bestScore) {
-                $bestScore = $score;
-                $bestName = $raw;
+                $score = 0.0;
+                if ($normalized === $target) {
+                    $score = 100.0;
+                } elseif (str_contains($normalized, $target) || str_contains($target, $normalized)) {
+                    $score = 86.0;
+                } else {
+                    similar_text($normalized, $target, $percent);
+                    $score = (float)$percent;
+                }
+
+                if ($score > $bestScore) {
+                    $bestScore = $score;
+                    $bestName = $raw;
+                }
             }
         }
 
