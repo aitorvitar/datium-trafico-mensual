@@ -340,14 +340,14 @@ function findWorkflowResellerCandidates(mysqli $connection, string $input, int $
 
             foreach ($variants as $variant) {
                 $normalized = normalizeForMatch($variant);
-                if ($normalized === '') {
+                if ($normalized === '' || strlen($normalized) < 3) {
                     continue;
                 }
 
                 $score = 0.0;
                 if ($normalized === $target) {
                     $score = 100.0;
-                } elseif (str_contains($normalized, $target) || str_contains($target, $normalized)) {
+                } elseif (strlen($normalized) >= 4 && (str_contains($normalized, $target) || str_contains($target, $normalized))) {
                     $score = 86.0;
                 } else {
                     similar_text($normalized, $target, $percent);
