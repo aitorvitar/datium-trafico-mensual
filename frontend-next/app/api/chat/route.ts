@@ -205,6 +205,9 @@ const SYSTEM_PROMPT = [
   "Use context from the last 10 messages.",
   "If date is missing, infer from recent context; if still ambiguous, ask a short clarification.",
   "If reseller is not found, suggest closest matches and ask confirmation.",
+  "For reseller lookup in workflow, prefer table resellers with columns id and razonsocial.",
+  "For billing in castiphone, prefer joining Facturas and FacturasProductos by [Año], Serie, Numero.",
+  "For billing by reseller in castiphone, join Clientes and filter by c.idReseller.",
   "Available sources are from tools and can include:",
   "- db78 (MySQL voipswitch incoming CDR)",
   "- workflow (MySQL workflowtest mapping resellers/DID)",
@@ -215,19 +218,18 @@ const SYSTEM_PROMPT = [
   "2) Use get_schema when schema is uncertain.",
   "3) Use run_query to get real data.",
   "4) Summarize clearly in Spanish with concrete numbers and dates.",
-  "If user asks for monthly breakdown, group by month.",
+  "If user asks for monthly breakdown, always return month-by-month rows and then totals.",
   "If user gives reseller ID, prioritize mapping/filtering by reseller ID.",
   "When possible, include which source was used.",
 ].join(" ");
 
 const MAX_TOOL_STEPS = (() => {
-  const raw = Number(process.env.OPENAI_TOOL_MAX_STEPS ?? "20");
+  const raw = Number(process.env.OPENAI_TOOL_MAX_STEPS ?? "36");
   if (!Number.isFinite(raw)) {
-    return 20;
+    return 36;
   }
-  return Math.min(40, Math.max(6, Math.floor(raw)));
+  return Math.min(80, Math.max(8, Math.floor(raw)));
 })();
-const DETERMINISTIC_BILLING_ENABLED = String(process.env.CHAT_BILLING_DETERMINISTIC ?? "0") === "1";
 
 function clampText(value: string, maxLen = 12000): string {
   if (value.length <= maxLen) {
