@@ -242,6 +242,7 @@ function extractBillingIntent(message: string): BillingIntent | null {
 
   client = client
     .replace(/\b(febrero|enero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/gi, "")
+    .replace(/\bde\b$/i, "")
     .replace(/[.,;:!?]+$/g, "")
     .trim();
 
@@ -256,6 +257,16 @@ function extractBillingIntent(message: string): BillingIntent | null {
     byMonth,
     monthFilter,
   };
+}
+
+function buildBillingContext(history: ChatHistoryItem[], currentMessage: string): string {
+  const recent = history
+    .slice(-6)
+    .filter((item) => item.role === "user" && typeof item.content === "string")
+    .map((item) => item.content.trim())
+    .filter((line) => line !== "");
+
+  return [...recent, currentMessage].join(" ");
 }
 
 async function callBillingQuery(intent: BillingIntent): Promise<BillingPayload> {
@@ -499,7 +510,17 @@ export async function POST(request: NextRequest) {
     const model = String(process.env.OPENAI_MODEL ?? "gpt-4.1-mini").trim();
     const history = Array.isArray(body.history) ? body.history : [];
 
-    const billingIntent = extractBillingIntent(message);
+    let billingIntent = extractBillingIntent(message);
+    if (billingIntent === null && /\bid[_\s-]*reseller\b|\breseller\b/i.test(message)) {
+      billingIntent = extractBillingIntent(buildBillingContext(history, message));
+      if (billingIntent !== null && billingIntent.resellerId <= 0) {
+        const idMatch =
+          message.match(/\bid[_\s-]*reseller\s*[:=]?\s*(\d+)\b/i) ?? message.match(/\breseller\s*[:=]?\s*(\d+)\b/i);
+        if (idMatch) {
+          billingIntent.resellerId = Number(idMatch[1]);
+        }
+      }
+    }
     if (billingIntent !== null) {
       try {
         const billingPayload = await callBillingQuery(billingIntent);
