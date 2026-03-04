@@ -7,6 +7,7 @@ require_once __DIR__ . '/../config/db.php';
 header('Content-Type: application/json; charset=utf-8');
 
 const AI_MAX_ROWS = 200;
+const AI_MAX_ROWS_CASTIPHONE = 120;
 const AI_MAX_TABLES = 120;
 const AI_MAX_COLUMNS = 4000;
 
@@ -93,6 +94,15 @@ function aiNormalizeSql(string $sql): string
     return rtrim(trim($sql), ';');
 }
 
+function aiMaxRowsForSource(string $source): int
+{
+    if ($source === 'castiphone') {
+        return AI_MAX_ROWS_CASTIPHONE;
+    }
+
+    return AI_MAX_ROWS;
+}
+
 function aiApplyMysqlLimit(string $sql, int $maxRows): string
 {
     if (preg_match('/\blimit\s+\d+/i', $sql)) {
@@ -117,6 +127,65 @@ function aiApplySqlServerLimit(string $sql, int $maxRows): string
     }
 
     return $sql;
+}
+
+/**
+ * @return array<int,string>
+ */
+function aiExtractTableNames(string $sql): array
+{
+    $tables = [];
+    if (!preg_match_all('/\b(?:from|join)\s+([a-zA-Z0-9_\[\]\.]+)/i', $sql, $matches)) {
+        return [];
+    }
+
+    foreach ($matches[1] as $raw) {
+        $clean = str_replace(['[', ']'], '', (string)$raw);
+        $parts = explode('.', $clean);
+        $table = strtolower(trim((string)end($parts)));
+        if ($table !== '') {
+            $tables[] = $table;
+        }
+    }
+
+    return array_values(array_unique($tables));
+}
+
+function aiValidateSourcePolicy(string $source, string $sql): void
+{
+    if ($source !== 'castiphone') {
+        return;
+    }
+
+    $tables = aiExtractTableNames($sql);
+    if (count($tables) === 0) {
+        throw new RuntimeException('En castiphone debes consultar tablas permitidas de negocio.');
+    }
+
+    $allowedTables = [
+        'facturas',
+        'facturasproductos',
+        'clientes',
+        'productos',
+        'productoscliente',
+        'productosclientecampos',
+        'productosclientedefecto',
+        'clientesservicio',
+    ];
+    foreach ($tables as $table) {
+        if (!in_array($table, $allowedTables, true)) {
+            throw new RuntimeException('Tabla no permitida en castiphone: ' . $table);
+        }
+    }
+
+    $touchesInvoices = in_array('facturas', $tables, true) || in_array('facturasproductos', $tables, true);
+    if ($touchesInvoices) {
+        $hasWhere = preg_match('/\bwhere\b/i', $sql) === 1;
+        $hasDateFilter = preg_match('/\bfecha\b|\banio\b|año/i', $sql) === 1;
+        if (!$hasWhere || !$hasDateFilter) {
+            throw new RuntimeException('En castiphone, consultas de facturacion deben incluir filtro de fecha/anio.');
+        }
+    }
 }
 
 function aiGetMysqlConnection(string $source): mysqli
@@ -407,11 +476,13 @@ function aiHandleRunQuery(string $source, string $sql): array
     }
 
     $normalizedSql = aiNormalizeSql($sql);
+    aiValidateSourcePolicy($source, $normalizedSql);
     $engine = $sources[$source]['engine'];
     $executedSql = $normalizedSql;
+    $maxRows = aiMaxRowsForSource($source);
 
     if ($engine === 'mysql') {
-        $executedSql = aiApplyMysqlLimit($normalizedSql, AI_MAX_ROWS);
+        $executedSql = aiApplyMysqlLimit($normalizedSql, $maxRows);
         $connection = aiGetMysqlConnection($source);
         try {
             $rows = aiQueryMysql($connection, $executedSql);
@@ -419,7 +490,7 @@ function aiHandleRunQuery(string $source, string $sql): array
             $connection->close();
         }
     } else {
-        $executedSql = aiApplySqlServerLimit($normalizedSql, AI_MAX_ROWS);
+        $executedSql = aiApplySqlServerLimit($normalizedSql, $maxRows);
         $connection = getCastiphoneConnection();
         $rows = aiQuerySqlServer($connection, $executedSql);
         $connection = null;
@@ -436,7 +507,7 @@ function aiHandleRunQuery(string $source, string $sql): array
         'database' => $sources[$source]['database'],
         'sql_executed' => $executedSql,
         'row_count' => count($rows),
-        'max_rows' => AI_MAX_ROWS,
+        'max_rows' => $maxRows,
         'columns' => $columns,
         'rows' => $rows,
     ]);

@@ -267,6 +267,131 @@ function resolveWorkflowResellerById(mysqli $connection, int $id): ?array
 }
 
 /**
+ * @param array<int,string> $nameColumns
+ */
+function firstNonEmptyName(array $row, array $nameColumns): string
+{
+    foreach ($nameColumns as $column) {
+        $value = trim((string)($row[$column] ?? ''));
+        if ($value !== '') {
+            return $value;
+        }
+    }
+
+    return '';
+}
+
+/**
+ * @return array<int,array{id:int,name:string,score:float}>
+ */
+function findWorkflowResellerCandidates(mysqli $connection, string $input, int $limit = 5): array
+{
+    $input = trim($input);
+    if ($input === '') {
+        return [];
+    }
+
+    $detected = detectWorkflowResellerColumns($connection);
+    $idColumn = $detected['id_column'];
+    $nameColumns = $detected['name_columns'];
+    if ($idColumn === null || count($nameColumns) === 0) {
+        return [];
+    }
+
+    $sql = sprintf(
+        "SELECT `%s` AS id, %s FROM `resellers` LIMIT 3000",
+        $idColumn,
+        implode(', ', array_map(static fn(string $c): string => "`{$c}`", $nameColumns))
+    );
+
+    $result = $connection->query($sql);
+    if (!$result instanceof mysqli_result) {
+        return [];
+    }
+
+    $target = normalizeForMatch($input);
+    if ($target === '') {
+        $result->free();
+        return [];
+    }
+
+    $candidates = [];
+    while ($row = $result->fetch_assoc()) {
+        $id = (int)($row['id'] ?? 0);
+        if ($id <= 0) {
+            continue;
+        }
+
+        $bestName = '';
+        $bestScore = 0.0;
+        foreach ($nameColumns as $column) {
+            $raw = trim((string)($row[$column] ?? ''));
+            if ($raw === '') {
+                continue;
+            }
+            $normalized = normalizeForMatch($raw);
+            if ($normalized === '') {
+                continue;
+            }
+
+            $score = 0.0;
+            if ($normalized === $target) {
+                $score = 100.0;
+            } elseif (str_contains($normalized, $target) || str_contains($target, $normalized)) {
+                $score = 86.0;
+            } else {
+                similar_text($normalized, $target, $percent);
+                $score = (float)$percent;
+            }
+
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $bestName = $raw;
+            }
+        }
+
+        if ($bestScore >= 35.0) {
+            $candidates[] = [
+                'id' => $id,
+                'name' => $bestName !== '' ? $bestName : firstNonEmptyName($row, $nameColumns),
+                'score' => $bestScore,
+            ];
+        }
+    }
+    $result->free();
+
+    usort(
+        $candidates,
+        static function (array $a, array $b): int {
+            if ($a['score'] === $b['score']) {
+                return strcmp($a['name'], $b['name']);
+            }
+            return $a['score'] < $b['score'] ? 1 : -1;
+        }
+    );
+
+    $unique = [];
+    $used = [];
+    foreach ($candidates as $candidate) {
+        $key = (string)$candidate['id'];
+        if (isset($used[$key])) {
+            continue;
+        }
+        $used[$key] = true;
+        $unique[] = [
+            'id' => (int)$candidate['id'],
+            'name' => (string)$candidate['name'],
+            'score' => round((float)$candidate['score'], 2),
+        ];
+        if (count($unique) >= $limit) {
+            break;
+        }
+    }
+
+    return $unique;
+}
+
+/**
  * @return array<int,array<string,mixed>>
  */
 function fetchBillingByReseller(PDO $connection, int $resellerId, int $year, bool $byMonth): array
@@ -461,6 +586,7 @@ function computeTotals(array $rows): array
 function handleBillingQuery(PDO $castiphoneConnection, string $client, int $year, int $resellerId, bool $byMonth): array
 {
     $notes = [];
+    $candidates = [];
     $workflowConnection = null;
     try {
         $workflowConnection = getWorkflowTestConnection();
@@ -487,6 +613,10 @@ function handleBillingQuery(PDO $castiphoneConnection, string $client, int $year
         }
     }
 
+    if ($resolvedResellerId <= 0 && $client !== '' && $workflowConnection instanceof mysqli) {
+        $candidates = findWorkflowResellerCandidates($workflowConnection, $client, 5);
+    }
+
     if ($workflowConnection instanceof mysqli) {
         $workflowConnection->close();
     }
@@ -505,6 +635,7 @@ function handleBillingQuery(PDO $castiphoneConnection, string $client, int $year
             ],
             'rows' => $rows,
             'totals' => $totals,
+            'candidates' => [],
             'notes' => $notes,
         ]);
     }
@@ -524,6 +655,7 @@ function handleBillingQuery(PDO $castiphoneConnection, string $client, int $year
         ],
         'rows' => $rows,
         'totals' => $totals,
+        'candidates' => $candidates,
         'notes' => $notes,
     ]);
 }

@@ -66,6 +66,11 @@ type BillingPayload = {
       beneficio_total?: number;
       margen_pct?: number;
     };
+    candidates?: Array<{
+      id: number;
+      name: string;
+      score?: number;
+    }>;
     notes?: string[];
   };
   error?: string;
@@ -134,11 +139,14 @@ const SYSTEM_PROMPT = [
   "You are an internal telecom data analyst.",
   "You must use tools for factual database answers.",
   "Never invent table names, columns, or values.",
+  "Use context from the last 10 messages.",
+  "If date is missing, infer from recent context; if still ambiguous, ask a short clarification.",
+  "If reseller is not found, suggest closest matches and ask confirmation.",
   "Available sources are from tools and can include:",
   "- db78 (MySQL voipswitch incoming CDR)",
   "- workflow (MySQL workflowtest mapping resellers/DID)",
   "- wholesale (MySQL voipswitch wholesale CDR)",
-  "- castiphone (SQL Server billing)",
+  "- castiphone/eclipSe (SQL Server billing with strict read-only policy)",
   "Workflow:",
   "1) Use list_sources if needed.",
   "2) Use get_schema when schema is uncertain.",
@@ -156,6 +164,7 @@ const MAX_TOOL_STEPS = (() => {
   }
   return Math.min(40, Math.max(6, Math.floor(raw)));
 })();
+const DETERMINISTIC_BILLING_ENABLED = String(process.env.CHAT_BILLING_DETERMINISTIC ?? "0") === "1";
 
 function clampText(value: string, maxLen = 12000): string {
   if (value.length <= maxLen) {
@@ -486,6 +495,44 @@ function extractFollowUpBillingIntent(history: ChatHistoryItem[], message: strin
   return intent;
 }
 
+function isAffirmativeReply(normalizedText: string): boolean {
+  return /^(si|sii|ok|vale|perfecto|correcto|eso|ese|ese mismo|claro|adelante)\b/.test(normalizedText);
+}
+
+function extractSuggestionMeta(history: ChatHistoryItem[]): BillingIntent | null {
+  const recentAssistant = history
+    .slice(-10)
+    .filter((item) => item.role === "assistant" && typeof item.content === "string")
+    .map((item) => item.content.trim())
+    .filter((text) => text !== "")
+    .reverse();
+
+  for (const assistantText of recentAssistant) {
+    const refMatch = assistantText.match(/Referencia:\s*id_reseller=(\d+)\s+year=(\d{4})\s+by_month=(0|1)(?:\s+month=(\d+))?/i);
+    if (!refMatch) {
+      continue;
+    }
+
+    const resellerId = Number(refMatch[1]);
+    const year = Number(refMatch[2]);
+    const byMonth = refMatch[3] === "1";
+    const monthFilter = refMatch[4] ? Number(refMatch[4]) : null;
+    if (!Number.isFinite(resellerId) || resellerId <= 0 || !Number.isFinite(year) || year < 2000 || year > 2100) {
+      continue;
+    }
+
+    return {
+      year,
+      client: "",
+      resellerId,
+      byMonth,
+      monthFilter,
+    };
+  }
+
+  return null;
+}
+
 function buildBillingContext(history: ChatHistoryItem[], currentMessage: string): string {
   const recent = history
     .slice(-6)
@@ -561,6 +608,28 @@ function buildBillingAnswer(intent: BillingIntent, payload: BillingPayload): str
 
   if (intent.byMonth) {
     if (rows.length === 0) {
+      const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+      if (intent.client !== "" && candidates.length > 0) {
+        const top = candidates.slice(0, 3);
+        const lines = top.map((candidate, index) => {
+          const scoreLabel = typeof candidate.score === "number" ? ` (similitud ${candidate.score.toFixed(1)}%)` : "";
+          return `${index + 1}. [${candidate.id}] ${candidate.name}${scoreLabel}`;
+        });
+        const first = top[0];
+        const ref = first
+          ? `Referencia: id_reseller=${first.id} year=${intent.year} by_month=${intent.byMonth ? 1 : 0}${intent.monthFilter !== null ? ` month=${intent.monthFilter}` : ""}`
+          : "";
+
+        return [
+          `No encuentro facturacion para "${intent.client}" en ${intent.year}.`,
+          "He encontrado resellers con nombre parecido:",
+          ...lines,
+          `Si quieres, responde por ejemplo: "si, usa ${first?.id ?? "ID"}".`,
+          ref,
+        ]
+          .filter((line) => line.trim() !== "")
+          .join("\n");
+      }
       return `No encuentro facturacion para ${resellerLabel} en ${intent.year}.`;
     }
 
@@ -585,6 +654,28 @@ function buildBillingAnswer(intent: BillingIntent, payload: BillingPayload): str
   }
 
   if (!totals) {
+    const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+    if (intent.client !== "" && candidates.length > 0) {
+      const top = candidates.slice(0, 3);
+      const lines = top.map((candidate, index) => {
+        const scoreLabel = typeof candidate.score === "number" ? ` (similitud ${candidate.score.toFixed(1)}%)` : "";
+        return `${index + 1}. [${candidate.id}] ${candidate.name}${scoreLabel}`;
+      });
+      const first = top[0];
+      const ref = first
+        ? `Referencia: id_reseller=${first.id} year=${intent.year} by_month=${intent.byMonth ? 1 : 0}${intent.monthFilter !== null ? ` month=${intent.monthFilter}` : ""}`
+        : "";
+
+      return [
+        `No encuentro facturacion para "${intent.client}" en ${intent.year}.`,
+        "He encontrado resellers con nombre parecido:",
+        ...lines,
+        `Si quieres, responde por ejemplo: "si, usa ${first?.id ?? "ID"}".`,
+        ref,
+      ]
+        .filter((line) => line.trim() !== "")
+        .join("\n");
+    }
     return `No encuentro facturacion para ${resellerLabel} en ${intent.year}.`;
   }
 
@@ -612,7 +703,7 @@ function safeJsonParse(value: string): Record<string, unknown> {
 function toOpenAIConversation(history: ChatHistoryItem[], userMessage: string): OpenAIMessage[] {
   const conversation: OpenAIMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
 
-  for (const item of history.slice(-8)) {
+  for (const item of history.slice(-10)) {
     if (!item || (item.role !== "assistant" && item.role !== "user")) {
       continue;
     }
@@ -739,17 +830,25 @@ export async function POST(request: NextRequest) {
 
     const normalizedMessage = normalizeIntentText(message);
     const directResellerId = extractResellerId(normalizedMessage);
+    const baseIntent = extractBillingIntentFromHistory(history);
+    const suggestionIntent = extractSuggestionMeta(history);
+    const shouldUseSuggestion = isAffirmativeReply(normalizedMessage) && suggestionIntent !== null;
     const likelyBilling =
       isLikelyBillingRequest(normalizedMessage) ||
       directResellerId > 0 ||
-      /\b(factur|venta|coste|beneficio|margen)\b/i.test(normalizedMessage);
-
-    let billingIntent = extractBillingIntent(message);
+      /\b(factur|venta|coste|beneficio|margen)\b/i.test(normalizedMessage) ||
+      (baseIntent !== null && /\\b(para|ese|mismo|igual|tambien)\\b/i.test(normalizedMessage)) ||
+      shouldUseSuggestion;
+    if (DETERMINISTIC_BILLING_ENABLED) {
+      let billingIntent = extractBillingIntent(message);
     if (billingIntent === null && likelyBilling) {
       billingIntent = extractBillingIntent(buildBillingContext(history, message));
     }
     if (billingIntent === null) {
       billingIntent = extractFollowUpBillingIntent(history, message);
+    }
+    if (billingIntent === null && shouldUseSuggestion && suggestionIntent !== null) {
+      billingIntent = suggestionIntent;
     }
     if (billingIntent !== null) {
       if (directResellerId > 0) {
@@ -800,6 +899,7 @@ export async function POST(request: NextRequest) {
         });
       }
     }
+    }
 
     const messages = toOpenAIConversation(history, message);
 
@@ -839,7 +939,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (likelyBilling) {
+    if (DETERMINISTIC_BILLING_ENABLED && likelyBilling) {
       const fallbackIntent = extractBillingIntent(buildBillingContext(history, message));
       if (fallbackIntent !== null) {
         try {
@@ -863,4 +963,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
+
+
 
