@@ -225,6 +225,14 @@ function resolveResellerByLogin(string $login, array $resellerIndex): ?array
         if (isset($resellerIndex[$candidateKey])) {
             return $resellerIndex[$candidateKey];
         }
+
+        // Manual, business-confirmed alias overrides.
+        if ($candidateKey === 'zetadevoip' || $candidateKey === 'zetade') {
+            return [
+                'id_reseller' => 483,
+                'reseller' => 'ZETADE Gabinete de Ing, Inf y Telec SL',
+            ];
+        }
     }
 
     return null;
