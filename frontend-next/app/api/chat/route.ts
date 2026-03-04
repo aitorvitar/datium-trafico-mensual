@@ -1086,114 +1086,6 @@ export async function POST(request: NextRequest) {
     const model = String(process.env.OPENAI_MODEL ?? "gpt-4.1-mini").trim();
     const history = Array.isArray(body.history) ? body.history : [];
 
-    const interpretedIntent = await interpretBillingIntentWithAI({
-      apiKey,
-      model,
-      history,
-      message,
-    });
-    if (interpretedIntent !== null) {
-      const hasReseller = interpretedIntent.reseller_names.length > 0 || interpretedIntent.reseller_ids.length > 0;
-      const hasDates = isIsoDate(interpretedIntent.date_from) && isIsoDate(interpretedIntent.date_to);
-
-      if (interpretedIntent.needs_clarification && interpretedIntent.clarification_question !== "") {
-        return NextResponse.json({ ok: true, answer: interpretedIntent.clarification_question });
-      }
-
-      if (hasReseller && hasDates && interpretedIntent.intent !== "unknown" && interpretedIntent.confidence >= 0.45) {
-        try {
-          const analyzed = await callBillingAnalyze({
-            resellerNames: interpretedIntent.reseller_names,
-            resellerIds: interpretedIntent.reseller_ids,
-            dateFrom: interpretedIntent.date_from,
-            dateTo: interpretedIntent.date_to,
-            byMonth: interpretedIntent.by_month,
-          });
-          return NextResponse.json({
-            ok: true,
-            answer: buildBillingAnalyzeAnswer(interpretedIntent, analyzed),
-          });
-        } catch {
-          // Falls through to existing deterministic/tool logic.
-        }
-      }
-    }
-
-    const normalizedMessage = normalizeIntentText(message);
-    const directResellerId = extractResellerId(normalizedMessage);
-    const baseIntent = extractBillingIntentFromHistory(history);
-    const suggestionIntent = extractSuggestionMeta(history);
-    const shouldUseSuggestion = isAffirmativeReply(normalizedMessage) && suggestionIntent !== null;
-    const likelyBilling =
-      isLikelyBillingRequest(normalizedMessage) ||
-      directResellerId > 0 ||
-      /\b(factur|venta|coste|beneficio|margen)\b/i.test(normalizedMessage) ||
-      (baseIntent !== null && /\\b(para|ese|mismo|igual|tambien)\\b/i.test(normalizedMessage)) ||
-      shouldUseSuggestion;
-    if (DETERMINISTIC_BILLING_ENABLED) {
-      let billingIntent = extractBillingIntent(message);
-      if (billingIntent === null && shouldUseSuggestion && suggestionIntent !== null) {
-        billingIntent = suggestionIntent;
-      }
-      if (billingIntent === null && likelyBilling) {
-        billingIntent = extractBillingIntent(buildBillingContext(history, message));
-      }
-      if (billingIntent === null) {
-        billingIntent = extractFollowUpBillingIntent(history, message);
-      }
-    if (billingIntent !== null) {
-      if (directResellerId > 0) {
-        billingIntent.resellerId = directResellerId;
-      }
-
-      const directYear = extractYear(normalizedMessage);
-      if (directYear > 0) {
-        billingIntent.year = directYear;
-      }
-
-      const directMonth = extractMonth(normalizedMessage);
-      if (directMonth !== null) {
-        billingIntent.monthFilter = directMonth;
-        billingIntent.byMonth = true;
-      }
-      if (/\bmes(es)?\b|\bmensual\b|\bdesglosado\b|\btotal\b/.test(normalizedMessage)) {
-        billingIntent.byMonth = true;
-      }
-
-        if (!(shouldUseSuggestion && suggestionIntent !== null)) {
-          const directClient =
-            extractYear(normalizedMessage) > 0 || isLikelyBillingRequest(normalizedMessage)
-              ? extractClient(normalizedMessage, billingIntent.year)
-              : extractClientLoose(normalizedMessage);
-          if (directClient !== "") {
-            billingIntent.client = directClient;
-          }
-        }
-      }
-    if (billingIntent === null && likelyBilling) {
-      return NextResponse.json({
-        ok: true,
-        answer:
-          "Para consultar facturacion necesito al menos anio y cliente o id_reseller. Ejemplo: facturacion Telcat 2026 por meses.",
-      });
-    }
-    if (billingIntent !== null) {
-      try {
-        const billingPayload = await callBillingQuery(billingIntent);
-        return NextResponse.json({
-          ok: true,
-          answer: buildBillingAnswer(billingIntent, billingPayload),
-        });
-      } catch (error) {
-        const fallbackMessage = error instanceof Error ? error.message : "Error consultando facturacion.";
-        return NextResponse.json({
-          ok: true,
-          answer: `No he podido consultar facturacion ahora mismo: ${fallbackMessage}`,
-        });
-      }
-    }
-    }
-
     const messages = toOpenAIConversation(history, message);
 
     for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
@@ -1229,21 +1121,6 @@ export async function POST(request: NextRequest) {
           name: call.function.name,
           content: toolContent,
         });
-      }
-    }
-
-    if (DETERMINISTIC_BILLING_ENABLED && likelyBilling) {
-      const fallbackIntent = extractBillingIntent(buildBillingContext(history, message));
-      if (fallbackIntent !== null) {
-        try {
-          const billingPayload = await callBillingQuery(fallbackIntent);
-          return NextResponse.json({
-            ok: true,
-            answer: buildBillingAnswer(fallbackIntent, billingPayload),
-          });
-        } catch {
-          // Keep generic fallback below if deterministic query also fails.
-        }
       }
     }
 
