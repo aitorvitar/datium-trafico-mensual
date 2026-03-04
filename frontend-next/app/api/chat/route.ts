@@ -841,15 +841,15 @@ export async function POST(request: NextRequest) {
       shouldUseSuggestion;
     if (DETERMINISTIC_BILLING_ENABLED) {
       let billingIntent = extractBillingIntent(message);
-    if (billingIntent === null && likelyBilling) {
-      billingIntent = extractBillingIntent(buildBillingContext(history, message));
-    }
-    if (billingIntent === null) {
-      billingIntent = extractFollowUpBillingIntent(history, message);
-    }
-    if (billingIntent === null && shouldUseSuggestion && suggestionIntent !== null) {
-      billingIntent = suggestionIntent;
-    }
+      if (billingIntent === null && shouldUseSuggestion && suggestionIntent !== null) {
+        billingIntent = suggestionIntent;
+      }
+      if (billingIntent === null && likelyBilling) {
+        billingIntent = extractBillingIntent(buildBillingContext(history, message));
+      }
+      if (billingIntent === null) {
+        billingIntent = extractFollowUpBillingIntent(history, message);
+      }
     if (billingIntent !== null) {
       if (directResellerId > 0) {
         billingIntent.resellerId = directResellerId;
@@ -869,14 +869,16 @@ export async function POST(request: NextRequest) {
         billingIntent.byMonth = true;
       }
 
-      const directClient =
-        extractYear(normalizedMessage) > 0 || isLikelyBillingRequest(normalizedMessage)
-          ? extractClient(normalizedMessage, billingIntent.year)
-          : extractClientLoose(normalizedMessage);
-      if (directClient !== "") {
-        billingIntent.client = directClient;
+        if (!(shouldUseSuggestion && suggestionIntent !== null)) {
+          const directClient =
+            extractYear(normalizedMessage) > 0 || isLikelyBillingRequest(normalizedMessage)
+              ? extractClient(normalizedMessage, billingIntent.year)
+              : extractClientLoose(normalizedMessage);
+          if (directClient !== "") {
+            billingIntent.client = directClient;
+          }
+        }
       }
-    }
     if (billingIntent === null && likelyBilling) {
       return NextResponse.json({
         ok: true,
