@@ -31,6 +31,46 @@ type OpenAIResponse = {
   };
 };
 
+type BillingIntent = {
+  year: number;
+  client: string;
+  resellerId: number;
+  byMonth: boolean;
+  monthFilter: number | null;
+};
+
+type BillingRow = {
+  year?: number | null;
+  month?: number | null;
+  venta_total?: number;
+  coste_total?: number;
+  beneficio_total?: number;
+  margen_pct?: number;
+};
+
+type BillingPayload = {
+  ok?: boolean;
+  data?: {
+    query?: {
+      mode?: string;
+      client?: string;
+      year?: number;
+      by_month?: boolean;
+      reseller_id?: number | null;
+      reseller_name?: string;
+    };
+    rows?: BillingRow[];
+    totals?: {
+      venta_total?: number;
+      coste_total?: number;
+      beneficio_total?: number;
+      margen_pct?: number;
+    };
+    notes?: string[];
+  };
+  error?: string;
+};
+
 const TOOL_DEFINITIONS = [
   {
     type: "function",
@@ -114,6 +154,209 @@ function clampText(value: string, maxLen = 12000): string {
     return value;
   }
   return `${value.slice(0, maxLen)}\n...[truncated]`;
+}
+
+function formatEuros(value: number): string {
+  return new Intl.NumberFormat("es-ES", {
+    style: "currency",
+    currency: "EUR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatPercent(value: number): string {
+  return `${new Intl.NumberFormat("es-ES", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value)}%`;
+}
+
+function extractBillingIntent(message: string): BillingIntent | null {
+  const text = message.trim();
+  if (!/factur|venta|coste|beneficio|margen/i.test(text)) {
+    return null;
+  }
+
+  const yearMatch = text.match(/\b(20\d{2})\b/);
+  if (!yearMatch) {
+    return null;
+  }
+  const year = Number(yearMatch[1]);
+  if (!Number.isFinite(year) || year < 2000 || year > 2100) {
+    return null;
+  }
+
+  const monthMap: Array<[RegExp, number]> = [
+    [/\benero\b/i, 1],
+    [/\bfebrero\b/i, 2],
+    [/\bmarzo\b/i, 3],
+    [/\babril\b/i, 4],
+    [/\bmayo\b/i, 5],
+    [/\bjunio\b/i, 6],
+    [/\bjulio\b/i, 7],
+    [/\bagosto\b/i, 8],
+    [/\bseptiembre\b/i, 9],
+    [/\boctubre\b/i, 10],
+    [/\bnoviembre\b/i, 11],
+    [/\bdiciembre\b/i, 12],
+  ];
+  let monthFilter: number | null = null;
+  for (const [regex, monthNumber] of monthMap) {
+    if (regex.test(text)) {
+      monthFilter = monthNumber;
+      break;
+    }
+  }
+
+  const byMonth =
+    monthFilter !== null || /\bmes(es)?\b/i.test(text) || /desglosad[oa]/i.test(text) || /mensual/i.test(text);
+
+  let resellerId = 0;
+  const resellerIdMatch =
+    text.match(/\bid[_\s-]*reseller\s*[:=]?\s*(\d+)\b/i) ?? text.match(/\breseller\s*[:=]?\s*(\d+)\b/i);
+  if (resellerIdMatch) {
+    resellerId = Number(resellerIdMatch[1]);
+  }
+
+  let client = "";
+  const namedPatterns = [
+    /factur(?:aci[oó]n)?\s+de\s+(.+?)\s+(?:del|de)\s+20\d{2}/i,
+    /ha\s+facturado\s+(.+?)\s+(?:en|del|de)\s+20\d{2}/i,
+    /pasame\s+factur(?:aci[oó]n)?\s+de\s+(.+?)\s+(?:en|del|de)\s+20\d{2}/i,
+  ];
+  for (const pattern of namedPatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      client = match[1].trim();
+      break;
+    }
+  }
+
+  if (client === "") {
+    const generic = text.match(/\bde\s+(.+?)\s+(?:en|del|de)\s+20\d{2}/i);
+    if (generic && generic[1]) {
+      client = generic[1].trim();
+    }
+  }
+
+  client = client
+    .replace(/\b(febrero|enero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/gi, "")
+    .replace(/[.,;:!?]+$/g, "")
+    .trim();
+
+  if (resellerId <= 0 && client === "") {
+    return null;
+  }
+
+  return {
+    year,
+    client,
+    resellerId,
+    byMonth,
+    monthFilter,
+  };
+}
+
+async function callBillingQuery(intent: BillingIntent): Promise<BillingPayload> {
+  const backendBase = process.env.PHP_BACKEND_BASE_URL ?? "http://backend/";
+  const endpoint = new URL("api/chat_query.php", backendBase);
+  const form = new URLSearchParams();
+  form.set("action", "billing_query");
+  form.set("year", String(intent.year));
+  form.set("by_month", intent.byMonth ? "1" : "0");
+  if (intent.resellerId > 0) {
+    form.set("reseller_id", String(intent.resellerId));
+  }
+  if (intent.client !== "") {
+    form.set("client", intent.client);
+  }
+
+  const response = await fetch(endpoint.toString(), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: form.toString(),
+    cache: "no-store",
+  });
+
+  const payload = (await response.json()) as BillingPayload;
+  if (!response.ok) {
+    throw new Error(payload.error ?? "Error consultando facturacion.");
+  }
+
+  return payload;
+}
+
+function buildBillingAnswer(intent: BillingIntent, payload: BillingPayload): string {
+  const data = payload.data;
+  if (!payload.ok || !data) {
+    return "No he podido obtener la facturacion en este momento.";
+  }
+
+  const resellerLabel = data.query?.reseller_id
+    ? `Reseller ${data.query.reseller_id}${data.query?.reseller_name ? ` (${data.query.reseller_name})` : ""}`
+    : (data.query?.client ?? intent.client);
+
+  const rows = Array.isArray(data.rows) ? data.rows : [];
+  const totals = data.totals;
+
+  if (intent.monthFilter !== null) {
+    const monthRow = rows.find((row) => Number(row.month ?? 0) === intent.monthFilter);
+    if (!monthRow) {
+      return `No encuentro facturacion para ${resellerLabel} en ${intent.year} mes ${intent.monthFilter}.`;
+    }
+    const venta = Number(monthRow.venta_total ?? 0);
+    const coste = Number(monthRow.coste_total ?? 0);
+    const beneficio = Number(monthRow.beneficio_total ?? 0);
+    const margen = Number(monthRow.margen_pct ?? 0);
+
+    return [
+      `Facturacion de ${resellerLabel} en ${intent.monthFilter}/${intent.year}:`,
+      `- Venta: ${formatEuros(venta)}`,
+      `- Coste: ${formatEuros(coste)}`,
+      `- Beneficio: ${formatEuros(beneficio)}`,
+      `- Margen: ${formatPercent(margen)}`,
+    ].join("\n");
+  }
+
+  if (intent.byMonth) {
+    if (rows.length === 0) {
+      return `No encuentro facturacion para ${resellerLabel} en ${intent.year}.`;
+    }
+
+    const lines = rows.map((row) => {
+      const month = Number(row.month ?? 0);
+      const venta = Number(row.venta_total ?? 0);
+      const coste = Number(row.coste_total ?? 0);
+      const beneficio = Number(row.beneficio_total ?? 0);
+      const margen = Number(row.margen_pct ?? 0);
+      return `- ${month}/${intent.year}: venta ${formatEuros(venta)}, coste ${formatEuros(coste)}, beneficio ${formatEuros(beneficio)}, margen ${formatPercent(margen)}`;
+    });
+
+    const totalVenta = Number(totals?.venta_total ?? 0);
+    const totalCoste = Number(totals?.coste_total ?? 0);
+    const totalBeneficio = Number(totals?.beneficio_total ?? 0);
+    const totalMargen = Number(totals?.margen_pct ?? 0);
+    lines.push(
+      `Total ${intent.year}: venta ${formatEuros(totalVenta)}, coste ${formatEuros(totalCoste)}, beneficio ${formatEuros(totalBeneficio)}, margen ${formatPercent(totalMargen)}`,
+    );
+
+    return `Facturacion mensual de ${resellerLabel} en ${intent.year}:\n${lines.join("\n")}`;
+  }
+
+  if (!totals) {
+    return `No encuentro facturacion para ${resellerLabel} en ${intent.year}.`;
+  }
+
+  return [
+    `Facturacion de ${resellerLabel} en ${intent.year}:`,
+    `- Venta: ${formatEuros(Number(totals.venta_total ?? 0))}`,
+    `- Coste: ${formatEuros(Number(totals.coste_total ?? 0))}`,
+    `- Beneficio: ${formatEuros(Number(totals.beneficio_total ?? 0))}`,
+    `- Margen: ${formatPercent(Number(totals.margen_pct ?? 0))}`,
+  ].join("\n");
 }
 
 function safeJsonParse(value: string): Record<string, unknown> {
@@ -255,6 +498,24 @@ export async function POST(request: NextRequest) {
 
     const model = String(process.env.OPENAI_MODEL ?? "gpt-4.1-mini").trim();
     const history = Array.isArray(body.history) ? body.history : [];
+
+    const billingIntent = extractBillingIntent(message);
+    if (billingIntent !== null) {
+      try {
+        const billingPayload = await callBillingQuery(billingIntent);
+        return NextResponse.json({
+          ok: true,
+          answer: buildBillingAnswer(billingIntent, billingPayload),
+        });
+      } catch (error) {
+        const fallbackMessage = error instanceof Error ? error.message : "Error consultando facturacion.";
+        return NextResponse.json({
+          ok: true,
+          answer: `No he podido consultar facturacion ahora mismo: ${fallbackMessage}`,
+        });
+      }
+    }
+
     const messages = toOpenAIConversation(history, message);
 
     for (let step = 0; step < 10; step += 1) {
