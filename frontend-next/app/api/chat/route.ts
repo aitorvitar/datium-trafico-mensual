@@ -242,7 +242,7 @@ function extractBillingIntent(message: string): BillingIntent | null {
 
   client = client
     .replace(/\b(febrero|enero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/gi, "")
-    .replace(/\bde\b$/i, "")
+    .replace(/\bde\b\s*$/i, "")
     .replace(/[.,;:!?]+$/g, "")
     .trim();
 
