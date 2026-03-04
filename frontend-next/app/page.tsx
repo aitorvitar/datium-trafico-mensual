@@ -1,3 +1,5 @@
+import ChatIASection from "./components/chat-ia";
+
 type SearchValue = string | string[] | undefined;
 type SearchParams = Record<string, SearchValue>;
 
@@ -35,17 +37,6 @@ function firstValue(value: SearchValue): string {
   return value ?? "";
 }
 
-function defaultMonthRange(): { from: string; to: string } {
-  const now = new Date();
-  const startCurrent = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const startPrev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-  const toYmd = (d: Date) => d.toISOString().slice(0, 10);
-  return {
-    from: toYmd(startPrev),
-    to: toYmd(startCurrent),
-  };
-}
-
 function parseFilters(searchParams: SearchParams): Record<string, string> {
   const parsed: Record<string, string> = {};
   for (const [key, value] of Object.entries(searchParams)) {
@@ -62,6 +53,7 @@ function buildHref(input: {
   report: string;
   from: string;
   to: string;
+  run?: boolean;
   page?: number;
   sort?: string;
   dir?: string;
@@ -71,6 +63,9 @@ function buildHref(input: {
   qs.set("report", input.report);
   qs.set("from", input.from);
   qs.set("to", input.to);
+  if (input.run) {
+    qs.set("run", "1");
+  }
 
   if (input.page && input.page > 1) {
     qs.set("page", String(input.page));
@@ -194,10 +189,10 @@ async function fetchReport(params: {
 }
 
 export default async function Page({ searchParams }: { searchParams: SearchParams }) {
-  const range = defaultMonthRange();
+  const shouldRun = firstValue(searchParams.run) === "1";
   const report = firstValue(searchParams.report) || "global_reseller_voz";
-  const from = firstValue(searchParams.from) || range.from;
-  const to = firstValue(searchParams.to) || range.to;
+  const from = firstValue(searchParams.from);
+  const to = firstValue(searchParams.to);
   const page = Math.max(1, Number.parseInt(firstValue(searchParams.page) || "1", 10) || 1);
   const sort = firstValue(searchParams.sort);
   const dir = firstValue(searchParams.dir).toLowerCase() === "asc" ? "asc" : "desc";
@@ -206,18 +201,24 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
   let data: ReportData | null = null;
   let error = "";
 
-  try {
-    data = await fetchReport({
-      report,
-      from,
-      to,
-      page,
-      sort,
-      dir,
-      filters,
-    });
-  } catch (err) {
-    error = err instanceof Error ? err.message : "Error cargando datos.";
+  if (shouldRun) {
+    if (!from || !to) {
+      error = "Debes indicar un rango de fechas y pulsar Hacer consulta.";
+    } else {
+      try {
+        data = await fetchReport({
+          report,
+          from,
+          to,
+          page,
+          sort,
+          dir,
+          filters,
+        });
+      } catch (err) {
+        error = err instanceof Error ? err.message : "Error cargando datos.";
+      }
+    }
   }
 
   const incomingPage = data ? sumColumn(data.rows, "Minutos entrantes") : 0;
@@ -259,21 +260,29 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
               <input type="date" name="to" defaultValue={to} />
             </label>
           </div>
+          <input type="hidden" name="run" value="1" />
           <div className="actionRow">
             <button className="btn" type="submit">
-              Actualizar reporte
+              Hacer consulta
             </button>
-            <a
-              className="btn btnGhost"
-              href={`${backendPublicBase}export.php?report=${encodeURIComponent(report)}&from=${encodeURIComponent(
-                from,
-              )}&to=${encodeURIComponent(to)}`}
-            >
-              Exportar CSV
+            {from && to && shouldRun && (
+              <a
+                className="btn btnGhost"
+                href={`${backendPublicBase}export.php?report=${encodeURIComponent(report)}&from=${encodeURIComponent(
+                  from,
+                )}&to=${encodeURIComponent(to)}`}
+              >
+                Exportar CSV
+              </a>
+            )}
+            <a className="btn btnGhost" href="/">
+              Limpiar
             </a>
           </div>
         </form>
       </section>
+
+      {!shouldRun && <p className="infoBox">Selecciona un rango y pulsa Hacer consulta para cargar datos.</p>}
 
       {error && <p className="errorBox">{error}</p>}
 
@@ -309,6 +318,7 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
             <input type="hidden" name="report" value={report} />
             <input type="hidden" name="from" value={from} />
             <input type="hidden" name="to" value={to} />
+            <input type="hidden" name="run" value="1" />
             {data.sortColumn ? <input type="hidden" name="sort" value={data.sortColumn} /> : null}
             {data.sortColumn ? <input type="hidden" name="dir" value={data.sortDir} /> : null}
 
@@ -325,7 +335,7 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
               <button className="btn" type="submit">
                 Aplicar filtros
               </button>
-              <a className="btn btnGhost" href={buildHref({ report, from, to })}>
+              <a className="btn btnGhost" href={buildHref({ report, from, to, run: true })}>
                 Limpiar
               </a>
             </div>
@@ -348,6 +358,7 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
                             report,
                             from,
                             to,
+                            run: true,
                             page: 1,
                             sort: column,
                             dir: nextDir,
@@ -399,7 +410,10 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
           {data.maxPage > 1 && (
             <nav className="pagination">
               {data.page > 1 && (
-                <a className="btn btnGhost" href={buildHref({ report, from, to, page: data.page - 1, sort, dir, filters })}>
+                <a
+                  className="btn btnGhost"
+                  href={buildHref({ report, from, to, run: true, page: data.page - 1, sort, dir, filters })}
+                >
                   Anterior
                 </a>
               )}
@@ -409,7 +423,10 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
               </span>
 
               {data.page < data.maxPage && (
-                <a className="btn btnGhost" href={buildHref({ report, from, to, page: data.page + 1, sort, dir, filters })}>
+                <a
+                  className="btn btnGhost"
+                  href={buildHref({ report, from, to, run: true, page: data.page + 1, sort, dir, filters })}
+                >
                   Siguiente
                 </a>
               )}
@@ -417,6 +434,8 @@ export default async function Page({ searchParams }: { searchParams: SearchParam
           )}
         </section>
       )}
+
+      <ChatIASection />
     </main>
   );
 }

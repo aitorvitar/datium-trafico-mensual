@@ -140,6 +140,15 @@ a {
   background: #fff1f3;
 }
 
+.infoBox {
+  margin-top: 16px;
+  border: 1px solid rgba(15, 125, 184, 0.35);
+  color: #0f4f73;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: #eff8ff;
+}
+
 .metrics {
   margin-top: 14px;
   display: grid;
@@ -267,6 +276,67 @@ a {
   font-family: var(--font-mono), Consolas, monospace;
 }
 
+.chatBox {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.chatMsg {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.chatMsg-assistant {
+  background: #f7fbff;
+}
+
+.chatMsg-user {
+  background: #f3fff9;
+}
+
+.chatRole {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.chatText {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.chatForm {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr auto;
+}
+
+.chatForm input {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 0.95rem;
+}
+
+.chatForm input:focus {
+  outline: 2px solid rgba(15, 125, 184, 0.28);
+  border-color: transparent;
+}
+
 @keyframes reveal {
   from {
     opacity: 0;
@@ -315,5 +385,8 @@ a {
   .btn {
     text-align: center;
     width: 100%;
+  }
+  .chatForm {
+    grid-template-columns: 1fr;
   }
 }

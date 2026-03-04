@@ -14,6 +14,9 @@ Herramienta interna de reporting VoIP con exportacion CSV.
 1. Copia `.env.example` a `.env`.
 2. Rellena usuarios/passwords.
 3. En XAMPP, reinicia Apache.
+4. Para Chat IA, añade en `.env`:
+   - `OPENAI_API_KEY=...`
+   - `OPENAI_MODEL=gpt-4.1-mini` (opcional)
 
 ## Ejecucion local
 
@@ -25,12 +28,15 @@ Herramienta interna de reporting VoIP con exportacion CSV.
 Carpeta: `frontend-next`
 
 1. Copia `frontend-next/.env.example` a `frontend-next/.env.local`.
-2. Instala dependencias:
+2. En `frontend-next/.env.local`, define tambien:
+   - `OPENAI_API_KEY=...`
+   - `OPENAI_MODEL=gpt-4.1-mini` (opcional)
+3. Instala dependencias:
    - `cd frontend-next`
    - `npm install`
-3. Arranca:
+4. Arranca:
    - `npm run dev`
-4. Abre:
+5. Abre:
    - `http://localhost:3000`
 
 ## Docker (listo para nuevo servidor)
@@ -45,6 +51,7 @@ Incluye 3 servicios:
 
 1. Copia `.env.example` a `.env` en la raiz del proyecto.
 2. Completa credenciales reales.
+   - Incluye `OPENAI_API_KEY` para habilitar `Chat IA`.
 3. Ejecuta:
    - `docker compose build`
    - `docker compose up -d`
