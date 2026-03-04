@@ -28,42 +28,305 @@ function failure(string $message): array
     ];
 }
 
+function normalizeForMatch(string $value): string
+{
+    $value = mb_strtolower(trim($value), 'UTF-8');
+    $ascii = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
+    if (is_string($ascii) && $ascii !== '') {
+        $value = $ascii;
+    }
+
+    return preg_replace('/[^a-z0-9]+/', '', $value) ?? '';
+}
+
 /**
- * @return array<string, mixed>
+ * @return array{id_column:string|null,name_columns:array<int,string>}
  */
-function handleClientBillingYear(PDO $connection, string $client, int $year): array
+function detectWorkflowResellerColumns(mysqli $connection): array
+{
+    $sql = "
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'resellers'
+    ";
+
+    $result = $connection->query($sql);
+    if (!$result instanceof mysqli_result) {
+        return ['id_column' => null, 'name_columns' => []];
+    }
+
+    $columns = [];
+    while ($row = $result->fetch_assoc()) {
+        $columnName = (string)($row['COLUMN_NAME'] ?? '');
+        if ($columnName !== '') {
+            $columns[] = $columnName;
+        }
+    }
+    $result->free();
+
+    $idColumn = null;
+    foreach (['id', 'id_reseller'] as $candidate) {
+        if (in_array($candidate, $columns, true)) {
+            $idColumn = $candidate;
+            break;
+        }
+    }
+
+    $nameColumns = [];
+    foreach (['razon_social', 'razonsocial', 'login', 'nombre', 'name'] as $candidate) {
+        if (in_array($candidate, $columns, true)) {
+            $nameColumns[] = $candidate;
+        }
+    }
+
+    return ['id_column' => $idColumn, 'name_columns' => $nameColumns];
+}
+
+/**
+ * @param array<int,string> $nameColumns
+ * @return array{id:int,name:string,score:float}|null
+ */
+function selectBestWorkflowMatch(array $rows, array $nameColumns, string $target): ?array
+{
+    $targetNormalized = normalizeForMatch($target);
+    if ($targetNormalized === '') {
+        return null;
+    }
+
+    $best = null;
+    $bestScore = 0.0;
+
+    foreach ($rows as $row) {
+        $id = (int)($row['id'] ?? 0);
+        if ($id <= 0) {
+            continue;
+        }
+
+        $rowBestName = '';
+        $rowBestScore = 0.0;
+        foreach ($nameColumns as $column) {
+            $raw = trim((string)($row[$column] ?? ''));
+            if ($raw === '') {
+                continue;
+            }
+
+            $normalized = normalizeForMatch($raw);
+            if ($normalized === '') {
+                continue;
+            }
+
+            $score = 0.0;
+            if ($normalized === $targetNormalized) {
+                $score = 100.0;
+            } elseif (str_contains($normalized, $targetNormalized) || str_contains($targetNormalized, $normalized)) {
+                $score = 86.0;
+            } else {
+                similar_text($normalized, $targetNormalized, $percent);
+                $score = (float)$percent;
+            }
+
+            if ($score > $rowBestScore) {
+                $rowBestScore = $score;
+                $rowBestName = $raw;
+            }
+        }
+
+        if ($rowBestScore > $bestScore) {
+            $bestScore = $rowBestScore;
+            $best = [
+                'id' => $id,
+                'name' => $rowBestName,
+                'score' => $rowBestScore,
+            ];
+        }
+    }
+
+    if ($best === null || $best['score'] < 45.0) {
+        return null;
+    }
+
+    return $best;
+}
+
+/**
+ * @return array{id:int,name:string,score:float}|null
+ */
+function resolveWorkflowResellerByName(mysqli $connection, string $input): ?array
+{
+    $input = trim($input);
+    if ($input === '') {
+        return null;
+    }
+
+    $detected = detectWorkflowResellerColumns($connection);
+    $idColumn = $detected['id_column'];
+    $nameColumns = $detected['name_columns'];
+    if ($idColumn === null || count($nameColumns) === 0) {
+        return null;
+    }
+
+    $conditions = [];
+    foreach ($nameColumns as $column) {
+        $conditions[] = "`{$column}` LIKE ?";
+    }
+    $sql = sprintf(
+        "SELECT `%s` AS id, %s FROM `resellers` WHERE %s LIMIT 80",
+        $idColumn,
+        implode(', ', array_map(static fn(string $c): string => "`{$c}`", $nameColumns)),
+        implode(' OR ', $conditions)
+    );
+
+    $statement = $connection->prepare($sql);
+    if (!$statement instanceof mysqli_stmt) {
+        return null;
+    }
+
+    $like = '%' . $input . '%';
+    $types = str_repeat('s', count($nameColumns));
+    $params = array_fill(0, count($nameColumns), $like);
+    $bind = [$types];
+    foreach ($params as $idx => $paramValue) {
+        $bind[] = &$params[$idx];
+    }
+    $statement->bind_param(...$bind);
+    $statement->execute();
+    $result = $statement->get_result();
+    if (!$result instanceof mysqli_result) {
+        $statement->close();
+        return null;
+    }
+
+    $rows = [];
+    while ($row = $result->fetch_assoc()) {
+        $rows[] = $row;
+    }
+    $result->free();
+    $statement->close();
+
+    return selectBestWorkflowMatch($rows, $nameColumns, $input);
+}
+
+/**
+ * @return array{id:int,name:string}|null
+ */
+function resolveWorkflowResellerById(mysqli $connection, int $id): ?array
+{
+    if ($id <= 0) {
+        return null;
+    }
+
+    $detected = detectWorkflowResellerColumns($connection);
+    $idColumn = $detected['id_column'];
+    $nameColumns = $detected['name_columns'];
+    if ($idColumn === null || count($nameColumns) === 0) {
+        return null;
+    }
+
+    $sql = sprintf(
+        "SELECT `%s` AS id, %s FROM `resellers` WHERE `%s` = ? LIMIT 1",
+        $idColumn,
+        implode(', ', array_map(static fn(string $c): string => "`{$c}`", $nameColumns)),
+        $idColumn
+    );
+
+    $statement = $connection->prepare($sql);
+    if (!$statement instanceof mysqli_stmt) {
+        return null;
+    }
+
+    $statement->bind_param('i', $id);
+    $statement->execute();
+    $result = $statement->get_result();
+    if (!$result instanceof mysqli_result) {
+        $statement->close();
+        return null;
+    }
+
+    $row = $result->fetch_assoc();
+    $result->free();
+    $statement->close();
+    if (!is_array($row)) {
+        return null;
+    }
+
+    foreach (['razon_social', 'razonsocial', 'login', 'nombre', 'name'] as $candidate) {
+        $name = trim((string)($row[$candidate] ?? ''));
+        if ($name !== '') {
+            return [
+                'id' => (int)($row['id'] ?? 0),
+                'name' => $name,
+            ];
+        }
+    }
+
+    return [
+        'id' => (int)($row['id'] ?? 0),
+        'name' => '',
+    ];
+}
+
+/**
+ * @return array<int,array<string,mixed>>
+ */
+function fetchBillingByReseller(PDO $connection, int $resellerId, int $year, bool $byMonth): array
 {
     $fromDateTime = sprintf('%04d-01-01 00:00:00', $year);
     $toDateTime = sprintf('%04d-01-01 00:00:00', $year + 1);
 
-    $sql = "
-        SELECT
-            c.Codigo AS cliente_codigo,
-            c.RazonSocial AS cliente,
-            c.CodigoPlataforma AS id_reseller,
-            SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) AS venta_total,
-            SUM(ISNULL(fp.Coste, 0)) AS coste_total,
-            SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
-        FROM [castiphone].[dbo].[Facturas] f
-        INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
-            ON f.[año] = fp.[año]
-           AND f.Serie = fp.Serie
-           AND f.Numero = fp.Numero
-        INNER JOIN [castiphone].[dbo].[Clientes] c
-            ON c.Codigo = f.Cliente
-        WHERE f.Fecha >= :from_date
-          AND f.Fecha < :to_date
-          AND c.RazonSocial LIKE :client
-          AND ISNULL(fp.TipoCobro, 0) = 0
-        GROUP BY c.Codigo, c.RazonSocial, c.CodigoPlataforma
-        HAVING SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) > 0
-        ORDER BY venta_total DESC
-    ";
+    if ($byMonth) {
+        $sql = "
+            SELECT
+                YEAR(f.Fecha) AS anio,
+                MONTH(f.Fecha) AS mes,
+                SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) AS venta_total,
+                SUM(ISNULL(fp.Coste, 0)) AS coste_total,
+                SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
+            FROM [castiphone].[dbo].[Facturas] f
+            INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
+                ON f.[año] = fp.[año]
+               AND f.Serie = fp.Serie
+               AND f.Numero = fp.Numero
+            INNER JOIN [castiphone].[dbo].[Clientes] c
+                ON c.Codigo = f.Cliente
+            WHERE f.Fecha >= :from_date
+              AND f.Fecha < :to_date
+              AND c.CodigoPlataforma = :reseller_id
+              AND ISNULL(fp.TipoCobro, 0) = 0
+            GROUP BY YEAR(f.Fecha), MONTH(f.Fecha)
+            HAVING SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) > 0
+            ORDER BY YEAR(f.Fecha), MONTH(f.Fecha)
+        ";
+    } else {
+        $sql = "
+            SELECT
+                :year_value AS anio,
+                NULL AS mes,
+                SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) AS venta_total,
+                SUM(ISNULL(fp.Coste, 0)) AS coste_total,
+                SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
+            FROM [castiphone].[dbo].[Facturas] f
+            INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
+                ON f.[año] = fp.[año]
+               AND f.Serie = fp.Serie
+               AND f.Numero = fp.Numero
+            INNER JOIN [castiphone].[dbo].[Clientes] c
+                ON c.Codigo = f.Cliente
+            WHERE f.Fecha >= :from_date
+              AND f.Fecha < :to_date
+              AND c.CodigoPlataforma = :reseller_id
+              AND ISNULL(fp.TipoCobro, 0) = 0
+            HAVING SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) > 0
+        ";
+    }
 
     $statement = $connection->prepare($sql);
     $statement->bindValue(':from_date', $fromDateTime);
     $statement->bindValue(':to_date', $toDateTime);
-    $statement->bindValue(':client', '%' . $client . '%');
+    $statement->bindValue(':reseller_id', $resellerId, PDO::PARAM_INT);
+    if (!$byMonth) {
+        $statement->bindValue(':year_value', $year, PDO::PARAM_INT);
+    }
     $statement->execute();
 
     $rows = [];
@@ -74,9 +337,8 @@ function handleClientBillingYear(PDO $connection, string $client, int $year): ar
         $margen = $venta > 0 ? ($beneficio / $venta) * 100 : 0.0;
 
         $rows[] = [
-            'cliente_codigo' => (int)($row['cliente_codigo'] ?? 0),
-            'cliente' => (string)($row['cliente'] ?? ''),
-            'id_reseller' => isset($row['id_reseller']) ? (int)$row['id_reseller'] : null,
+            'year' => isset($row['anio']) ? (int)$row['anio'] : null,
+            'month' => isset($row['mes']) ? (int)$row['mes'] : null,
             'venta_total' => $venta,
             'coste_total' => $coste,
             'beneficio_total' => $beneficio,
@@ -84,15 +346,185 @@ function handleClientBillingYear(PDO $connection, string $client, int $year): ar
         ];
     }
 
+    return $rows;
+}
+
+/**
+ * @return array<int,array<string,mixed>>
+ */
+function fetchBillingByClientName(PDO $connection, string $clientName, int $year, bool $byMonth): array
+{
+    $fromDateTime = sprintf('%04d-01-01 00:00:00', $year);
+    $toDateTime = sprintf('%04d-01-01 00:00:00', $year + 1);
+
+    if ($byMonth) {
+        $sql = "
+            SELECT
+                YEAR(f.Fecha) AS anio,
+                MONTH(f.Fecha) AS mes,
+                SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) AS venta_total,
+                SUM(ISNULL(fp.Coste, 0)) AS coste_total,
+                SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
+            FROM [castiphone].[dbo].[Facturas] f
+            INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
+                ON f.[año] = fp.[año]
+               AND f.Serie = fp.Serie
+               AND f.Numero = fp.Numero
+            INNER JOIN [castiphone].[dbo].[Clientes] c
+                ON c.Codigo = f.Cliente
+            WHERE f.Fecha >= :from_date
+              AND f.Fecha < :to_date
+              AND c.RazonSocial LIKE :client
+              AND ISNULL(fp.TipoCobro, 0) = 0
+            GROUP BY YEAR(f.Fecha), MONTH(f.Fecha)
+            HAVING SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) > 0
+            ORDER BY YEAR(f.Fecha), MONTH(f.Fecha)
+        ";
+    } else {
+        $sql = "
+            SELECT
+                :year_value AS anio,
+                NULL AS mes,
+                SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) AS venta_total,
+                SUM(ISNULL(fp.Coste, 0)) AS coste_total,
+                SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
+            FROM [castiphone].[dbo].[Facturas] f
+            INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
+                ON f.[año] = fp.[año]
+               AND f.Serie = fp.Serie
+               AND f.Numero = fp.Numero
+            INNER JOIN [castiphone].[dbo].[Clientes] c
+                ON c.Codigo = f.Cliente
+            WHERE f.Fecha >= :from_date
+              AND f.Fecha < :to_date
+              AND c.RazonSocial LIKE :client
+              AND ISNULL(fp.TipoCobro, 0) = 0
+            HAVING SUM((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) > 0
+        ";
+    }
+
+    $statement = $connection->prepare($sql);
+    $statement->bindValue(':from_date', $fromDateTime);
+    $statement->bindValue(':to_date', $toDateTime);
+    $statement->bindValue(':client', '%' . $clientName . '%');
+    if (!$byMonth) {
+        $statement->bindValue(':year_value', $year, PDO::PARAM_INT);
+    }
+    $statement->execute();
+
+    $rows = [];
+    while ($row = $statement->fetch()) {
+        $venta = (float)($row['venta_total'] ?? 0);
+        $coste = (float)($row['coste_total'] ?? 0);
+        $beneficio = (float)($row['beneficio_total'] ?? 0);
+        $margen = $venta > 0 ? ($beneficio / $venta) * 100 : 0.0;
+
+        $rows[] = [
+            'year' => isset($row['anio']) ? (int)$row['anio'] : null,
+            'month' => isset($row['mes']) ? (int)$row['mes'] : null,
+            'venta_total' => $venta,
+            'coste_total' => $coste,
+            'beneficio_total' => $beneficio,
+            'margen_pct' => $margen,
+        ];
+    }
+
+    return $rows;
+}
+
+/**
+ * @param array<int,array<string,mixed>> $rows
+ * @return array<string,float>
+ */
+function computeTotals(array $rows): array
+{
+    $venta = 0.0;
+    $coste = 0.0;
+    $beneficio = 0.0;
+    foreach ($rows as $row) {
+        $venta += (float)($row['venta_total'] ?? 0);
+        $coste += (float)($row['coste_total'] ?? 0);
+        $beneficio += (float)($row['beneficio_total'] ?? 0);
+    }
+
+    return [
+        'venta_total' => $venta,
+        'coste_total' => $coste,
+        'beneficio_total' => $beneficio,
+        'margen_pct' => $venta > 0 ? ($beneficio / $venta) * 100 : 0.0,
+    ];
+}
+
+/**
+ * @return array<string,mixed>
+ */
+function handleBillingQuery(PDO $castiphoneConnection, string $client, int $year, int $resellerId, bool $byMonth): array
+{
+    $notes = [];
+    $workflowConnection = null;
+    try {
+        $workflowConnection = getWorkflowTestConnection();
+    } catch (Throwable $e) {
+        $notes[] = 'No se pudo abrir conexion workflow para mapeo de reseller.';
+    }
+
+    $resolvedResellerId = $resellerId > 0 ? $resellerId : 0;
+    $resolvedResellerName = '';
+
+    if ($resolvedResellerId <= 0 && $client !== '' && $workflowConnection instanceof mysqli) {
+        $resolved = resolveWorkflowResellerByName($workflowConnection, $client);
+        if ($resolved !== null) {
+            $resolvedResellerId = $resolved['id'];
+            $resolvedResellerName = $resolved['name'];
+            $notes[] = 'Mapeado por workflowtest.resellers.';
+        }
+    }
+
+    if ($resolvedResellerId > 0 && $workflowConnection instanceof mysqli && $resolvedResellerName === '') {
+        $resolved = resolveWorkflowResellerById($workflowConnection, $resolvedResellerId);
+        if ($resolved !== null) {
+            $resolvedResellerName = $resolved['name'];
+        }
+    }
+
+    if ($workflowConnection instanceof mysqli) {
+        $workflowConnection->close();
+    }
+
+    if ($resolvedResellerId > 0) {
+        $rows = fetchBillingByReseller($castiphoneConnection, $resolvedResellerId, $year, $byMonth);
+        $totals = computeTotals($rows);
+        return success([
+            'query' => [
+                'mode' => 'reseller',
+                'client' => $client,
+                'year' => $year,
+                'by_month' => $byMonth,
+                'reseller_id' => $resolvedResellerId,
+                'reseller_name' => $resolvedResellerName,
+            ],
+            'rows' => $rows,
+            'totals' => $totals,
+            'notes' => $notes,
+        ]);
+    }
+
+    $rows = fetchBillingByClientName($castiphoneConnection, $client, $year, $byMonth);
+    $totals = computeTotals($rows);
+    $notes[] = 'Filtro por castiphone.Clientes.RazonSocial LIKE.';
+
     return success([
         'query' => [
-            'action' => 'client_billing_year',
+            'mode' => 'client_name',
             'client' => $client,
             'year' => $year,
-            'from' => $fromDateTime,
-            'to' => $toDateTime,
+            'by_month' => $byMonth,
+            'reseller_id' => null,
+            'reseller_name' => '',
         ],
         'rows' => $rows,
+        'totals' => $totals,
+        'notes' => $notes,
     ]);
 }
 
@@ -102,10 +534,31 @@ try {
         throw new RuntimeException('Falta action.');
     }
 
+    $castiphoneConnection = getCastiphoneConnection();
+
+    if ($action === 'billing_query') {
+        $client = trim((string)($_REQUEST['client'] ?? ''));
+        $year = (int)($_REQUEST['year'] ?? 0);
+        $resellerId = (int)($_REQUEST['reseller_id'] ?? 0);
+        $byMonthRaw = strtolower(trim((string)($_REQUEST['by_month'] ?? '0')));
+        $byMonth = in_array($byMonthRaw, ['1', 'true', 'yes'], true);
+
+        if ($year < 2000 || $year > 2100) {
+            throw new RuntimeException('Year no valido.');
+        }
+        if ($client === '' && $resellerId <= 0) {
+            throw new RuntimeException('Debes indicar client o reseller_id.');
+        }
+
+        $payload = handleBillingQuery($castiphoneConnection, $client, $year, $resellerId, $byMonth);
+        echo json_encode($payload, JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    // Backward compatible action.
     if ($action === 'client_billing_year') {
         $client = trim((string)($_REQUEST['client'] ?? ''));
         $year = (int)($_REQUEST['year'] ?? 0);
-
         if ($client === '') {
             throw new RuntimeException('Falta client.');
         }
@@ -113,8 +566,7 @@ try {
             throw new RuntimeException('Year no valido.');
         }
 
-        $connection = getCastiphoneConnection();
-        $payload = handleClientBillingYear($connection, $client, $year);
+        $payload = handleBillingQuery($castiphoneConnection, $client, $year, 0, false);
         echo json_encode($payload, JSON_UNESCAPED_UNICODE);
         exit;
     }

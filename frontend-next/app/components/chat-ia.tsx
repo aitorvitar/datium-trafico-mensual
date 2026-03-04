@@ -17,7 +17,7 @@ const INITIAL_MESSAGES: ChatMessage[] = [
   {
     role: "assistant",
     content:
-      'Chat IA listo. Ejemplo: "que ha facturado ConnetSur en 2026?". Si no indicas cliente y año te pediré esos datos.',
+      'Chat IA listo. Ejemplos: "que ha facturado Telcat en 2026, desglosado en meses" o "id_reseller=26 en 2026".',
   },
 ];
 
@@ -45,7 +45,10 @@ export default function ChatIASection() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ message: question }),
+        body: JSON.stringify({
+          message: question,
+          history: messages.slice(-8),
+        }),
       });
 
       const payload = (await response.json()) as ChatApiResponse;

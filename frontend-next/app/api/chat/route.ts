@@ -1,19 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
 
+type ChatHistoryItem = {
+  role: "assistant" | "user";
+  content: string;
+};
+
 type Extraction = {
-  intent: "client_billing_year" | "unknown";
+  intent: "billing_query" | "unknown";
   client: string;
   year: number | null;
+  reseller_id: number | null;
+  by_month: boolean;
 };
 
 type BillingRow = {
-  cliente_codigo: number;
-  cliente: string;
-  id_reseller: number | null;
+  year: number | null;
+  month: number | null;
   venta_total: number;
   coste_total: number;
   beneficio_total: number;
   margen_pct: number;
+};
+
+type BillingPayload = {
+  query: {
+    mode: "reseller" | "client_name";
+    client: string;
+    year: number;
+    by_month: boolean;
+    reseller_id: number | null;
+    reseller_name: string;
+  };
+  rows: BillingRow[];
+  totals: {
+    venta_total: number;
+    coste_total: number;
+    beneficio_total: number;
+    margen_pct: number;
+  };
+  notes: string[];
 };
 
 function toNumber(value: unknown): number {
@@ -21,25 +46,94 @@ function toNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function toBool(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
 function euro(value: number): string {
-  return `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} €`;
+  return `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} EUR`;
 }
 
 function normalizeExtraction(raw: unknown): Extraction {
   if (!raw || typeof raw !== "object") {
-    return { intent: "unknown", client: "", year: null };
+    return { intent: "unknown", client: "", year: null, reseller_id: null, by_month: false };
   }
 
   const candidate = raw as Record<string, unknown>;
-  const intent = candidate.intent === "client_billing_year" ? "client_billing_year" : "unknown";
+  const intent = candidate.intent === "billing_query" ? "billing_query" : "unknown";
   const client = typeof candidate.client === "string" ? candidate.client.trim() : "";
-  const year = Number.parseInt(String(candidate.year ?? ""), 10);
-  const normalizedYear = Number.isFinite(year) && year >= 2000 && year <= 2100 ? year : null;
+  const yearValue = Number.parseInt(String(candidate.year ?? ""), 10);
+  const year = Number.isFinite(yearValue) && yearValue >= 2000 && yearValue <= 2100 ? yearValue : null;
+  const resellerRaw = Number.parseInt(String(candidate.reseller_id ?? ""), 10);
+  const reseller_id = Number.isFinite(resellerRaw) && resellerRaw > 0 ? resellerRaw : null;
+  const by_month = toBool(candidate.by_month);
 
-  return { intent, client, year: normalizedYear };
+  return { intent, client, year, reseller_id, by_month };
 }
 
-async function extractIntentWithOpenAI(message: string, apiKey: string, model: string): Promise<Extraction> {
+function mergeExtraction(primary: Extraction, fallback: Partial<Extraction>): Extraction {
+  const merged: Extraction = {
+    intent:
+      primary.intent !== "unknown"
+        ? primary.intent
+        : fallback.intent === "billing_query"
+          ? "billing_query"
+          : "unknown",
+    client: primary.client || (fallback.client ?? ""),
+    year: primary.year ?? fallback.year ?? null,
+    reseller_id: primary.reseller_id ?? fallback.reseller_id ?? null,
+    by_month: primary.by_month || Boolean(fallback.by_month),
+  };
+
+  if (merged.intent === "unknown" && merged.year && (merged.client || merged.reseller_id)) {
+    merged.intent = "billing_query";
+  }
+
+  return merged;
+}
+
+function extractFallback(message: string): Partial<Extraction> {
+  const text = message.trim();
+  const lowered = text.toLowerCase();
+  const yearMatch = lowered.match(/\b(20\d{2})\b/);
+  const resellerMatch = lowered.match(/\bid[_\s-]*reseller\s*=?\s*(\d{1,6})\b/) ?? lowered.match(/\breseller\s*=?\s*(\d{1,6})\b/);
+  const leadingIdMatch = lowered.match(/^\s*(\d{1,6})[\s,\t]+/);
+  const byMonth = /(mes|meses|mensual|desglos)/i.test(text);
+
+  let client = "";
+  const nameMatch =
+    text.match(/(?:facturad\w*|fcaturad\w*)\s+(.+?)\s+en\s+20\d{2}/i) ??
+    text.match(/(?:factura\w*)\s+de\s+(.+?)\s+en\s+20\d{2}/i);
+  if (nameMatch?.[1]) {
+    client = nameMatch[1].replace(/[,:]/g, " ").trim();
+  }
+
+  if (!client && leadingIdMatch && text.length > leadingIdMatch[0].length) {
+    const maybeName = text.slice(leadingIdMatch[0].length).replace(/id[_\s-]*reseller.*/i, "").trim();
+    client = maybeName.replace(/[,:]/g, " ").trim();
+  }
+
+  const resellerIdParsed = Number.parseInt(
+    resellerMatch?.[1] ?? leadingIdMatch?.[1] ?? "",
+    10,
+  );
+
+  return {
+    intent: yearMatch && (client || resellerMatch || leadingIdMatch) ? "billing_query" : "unknown",
+    client,
+    year: yearMatch ? Number.parseInt(yearMatch[1], 10) : null,
+    reseller_id: Number.isFinite(resellerIdParsed) && resellerIdParsed > 0 ? resellerIdParsed : null,
+    by_month: byMonth,
+  };
+}
+
+async function extractIntentWithOpenAI(text: string, apiKey: string, model: string): Promise<Extraction> {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -54,9 +148,9 @@ async function extractIntentWithOpenAI(message: string, apiKey: string, model: s
         {
           role: "system",
           content:
-            'Extrae solo JSON con claves: intent, client, year. intent permitido: "client_billing_year" o "unknown". Si falta nombre de cliente o año, usa intent "unknown". No inventes datos.',
+            'Devuelve solo JSON con: intent, client, year, reseller_id, by_month. intent permitido: "billing_query" o "unknown". Si piden desglose mensual, by_month=true. Si aparece id_reseller, extraelo como numero. No inventes.',
         },
-        { role: "user", content: message },
+        { role: "user", content: text },
       ],
     }),
   });
@@ -81,60 +175,83 @@ async function extractIntentWithOpenAI(message: string, apiKey: string, model: s
   return normalizeExtraction(parsed);
 }
 
-async function fetchBillingByClientYear(client: string, year: number): Promise<BillingRow[]> {
+async function fetchBilling(params: {
+  client: string;
+  year: number;
+  resellerId: number | null;
+  byMonth: boolean;
+}): Promise<BillingPayload> {
   const backendBase = process.env.PHP_BACKEND_BASE_URL ?? "http://backend/";
   const endpoint = new URL("api/chat_query.php", backendBase);
-  endpoint.searchParams.set("action", "client_billing_year");
-  endpoint.searchParams.set("client", client);
-  endpoint.searchParams.set("year", String(year));
+  endpoint.searchParams.set("action", "billing_query");
+  endpoint.searchParams.set("year", String(params.year));
+  endpoint.searchParams.set("by_month", params.byMonth ? "1" : "0");
+  if (params.client) {
+    endpoint.searchParams.set("client", params.client);
+  }
+  if (params.resellerId) {
+    endpoint.searchParams.set("reseller_id", String(params.resellerId));
+  }
 
   const response = await fetch(endpoint.toString(), { cache: "no-store" });
   const payload = (await response.json()) as {
     ok?: boolean;
-    data?: { rows?: BillingRow[] };
+    data?: BillingPayload;
     error?: string;
   };
 
-  if (!response.ok || !payload.ok) {
+  if (!response.ok || !payload.ok || !payload.data) {
     throw new Error(payload.error ?? "No se pudo consultar facturacion.");
   }
 
-  return payload.data?.rows ?? [];
+  return payload.data;
 }
 
-function buildBillingAnswer(rows: BillingRow[], year: number): string {
-  if (rows.length === 0) {
-    return `No encuentro facturacion para ese cliente en ${year}. Revisa el nombre exacto y vuelve a probar.`;
+function buildAnswer(payload: BillingPayload): string {
+  if (!payload.rows.length) {
+    return `No encuentro facturacion para ese criterio en ${payload.query.year}.`;
   }
 
-  const totalVenta = rows.reduce((acc, row) => acc + toNumber(row.venta_total), 0);
-  const totalCoste = rows.reduce((acc, row) => acc + toNumber(row.coste_total), 0);
-  const totalBeneficio = rows.reduce((acc, row) => acc + toNumber(row.beneficio_total), 0);
-  const margen = totalVenta > 0 ? (totalBeneficio / totalVenta) * 100 : 0;
-  const summary = `Facturacion ${year}: venta ${euro(totalVenta)}, coste ${euro(totalCoste)}, beneficio ${euro(
-    totalBeneficio,
-  )}, margen ${margen.toFixed(2)}%.`;
+  const head =
+    payload.query.mode === "reseller"
+      ? `Reseller ${payload.query.reseller_id}${payload.query.reseller_name ? ` (${payload.query.reseller_name})` : ""}`
+      : `Cliente "${payload.query.client}"`;
 
-  if (rows.length === 1) {
-    const row = rows[0];
-    return `${row.cliente} (${row.cliente_codigo}). ${summary}`;
+  const summary = `Facturacion ${payload.query.year}: venta ${euro(payload.totals.venta_total)}, coste ${euro(
+    payload.totals.coste_total,
+  )}, beneficio ${euro(payload.totals.beneficio_total)}, margen ${payload.totals.margen_pct.toFixed(2)}%.`;
+
+  if (!payload.query.by_month) {
+    return `${head}. ${summary} Fuente: castiphone (Facturas + FacturasProductos + Clientes).`;
   }
 
-  const detail = rows
-    .slice(0, 5)
-    .map((row) => `${row.cliente} (${row.cliente_codigo}): ${euro(toNumber(row.venta_total))}`)
+  const monthLines = payload.rows
+    .map((row) => {
+      const month = Number(row.month ?? 0);
+      const monthLabel = `${payload.query.year}-${String(month).padStart(2, "0")}`;
+      return `${monthLabel}: ${euro(toNumber(row.venta_total))}`;
+    })
     .join(" | ");
 
-  return `He encontrado ${rows.length} coincidencias. ${summary} Top coincidencias: ${detail}`;
+  return `${head}. ${summary} Desglose mensual: ${monthLines}. Fuente: castiphone (con mapeo workflow si aplica).`;
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body = (await request.json()) as { message?: string };
+    const body = (await request.json()) as { message?: string; history?: ChatHistoryItem[] };
     const message = String(body.message ?? "").trim();
     if (!message) {
       return NextResponse.json({ ok: false, error: "La consulta esta vacia." }, { status: 400 });
     }
+
+    const history = Array.isArray(body.history) ? body.history : [];
+    const recentUserContext = history
+      .filter((item) => item && item.role === "user" && typeof item.content === "string")
+      .slice(-4)
+      .map((item) => item.content.trim())
+      .filter(Boolean)
+      .join("\n");
+    const contextText = recentUserContext ? `${recentUserContext}\n${message}` : message;
 
     const apiKey = String(process.env.OPENAI_API_KEY ?? "").trim();
     if (!apiKey) {
@@ -145,19 +262,29 @@ export async function POST(request: NextRequest) {
     }
 
     const model = String(process.env.OPENAI_MODEL ?? "gpt-4.1-mini").trim();
-    const extraction = await extractIntentWithOpenAI(message, apiKey, model);
+    const modelExtraction = await extractIntentWithOpenAI(contextText, apiKey, model);
+    const fallbackExtraction = extractFallback(contextText);
+    const extraction = mergeExtraction(modelExtraction, fallbackExtraction);
 
-    if (extraction.intent !== "client_billing_year" || !extraction.client || !extraction.year) {
+    if (extraction.intent !== "billing_query" || !extraction.year || (!extraction.client && !extraction.reseller_id)) {
       return NextResponse.json({
         ok: true,
-        answer: 'Ahora mismo puedo responder: "que ha facturado <cliente> en <año>". Ejemplo: "que ha facturado ConnetSur en 2026?"',
+        answer:
+          'Puedo responder consultas de facturacion por anio. Ejemplos: "que ha facturado Telcat en 2026, desglosado en meses" o "id_reseller=26 en 2026".',
       });
     }
 
-    const rows = await fetchBillingByClientYear(extraction.client, extraction.year);
-    const answer = buildBillingAnswer(rows, extraction.year);
+    const payload = await fetchBilling({
+      client: extraction.client,
+      year: extraction.year,
+      resellerId: extraction.reseller_id,
+      byMonth: extraction.by_month,
+    });
 
-    return NextResponse.json({ ok: true, answer });
+    return NextResponse.json({
+      ok: true,
+      answer: buildAnswer(payload),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Error inesperado en Chat IA.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
