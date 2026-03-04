@@ -315,7 +315,10 @@ function sanitizeClientCandidate(candidate: string): string {
     "los",
     "las",
     "por",
+    "para",
     "cada",
+    "dato",
+    "datos",
     "mes",
     "meses",
     "mensual",
@@ -332,6 +335,10 @@ function sanitizeClientCandidate(candidate: string): string {
     "reseller",
     "id_reseller",
     "pasame",
+    "sacame",
+    "dame",
+    "los",
+    "las",
   ]);
   const months = new Set([
     "enero",
@@ -763,7 +770,10 @@ export async function POST(request: NextRequest) {
         billingIntent.byMonth = true;
       }
 
-      const directClient = extractClient(normalizedMessage, billingIntent.year);
+      const directClient =
+        extractYear(normalizedMessage) > 0 || isLikelyBillingRequest(normalizedMessage)
+          ? extractClient(normalizedMessage, billingIntent.year)
+          : extractClientLoose(normalizedMessage);
       if (directClient !== "") {
         billingIntent.client = directClient;
       }
