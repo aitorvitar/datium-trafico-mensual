@@ -420,7 +420,7 @@ function fetchBillingByReseller(PDO $connection, int $resellerId, int $year, boo
                 SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
             FROM [castiphone].[dbo].[Facturas] f
             INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
-                ON f.[año] = fp.[año]
+                ON f.[Año] = fp.[Año]
                AND f.Serie = fp.Serie
                AND f.Numero = fp.Numero
             INNER JOIN [castiphone].[dbo].[Clientes] c
@@ -443,7 +443,7 @@ function fetchBillingByReseller(PDO $connection, int $resellerId, int $year, boo
                 SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
             FROM [castiphone].[dbo].[Facturas] f
             INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
-                ON f.[año] = fp.[año]
+                ON f.[Año] = fp.[Año]
                AND f.Serie = fp.Serie
                AND f.Numero = fp.Numero
             INNER JOIN [castiphone].[dbo].[Clientes] c
@@ -503,7 +503,7 @@ function fetchBillingByClientName(PDO $connection, string $clientName, int $year
                 SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
             FROM [castiphone].[dbo].[Facturas] f
             INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
-                ON f.[año] = fp.[año]
+                ON f.[Año] = fp.[Año]
                AND f.Serie = fp.Serie
                AND f.Numero = fp.Numero
             INNER JOIN [castiphone].[dbo].[Clientes] c
@@ -526,7 +526,7 @@ function fetchBillingByClientName(PDO $connection, string $clientName, int $year
                 SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
             FROM [castiphone].[dbo].[Facturas] f
             INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
-                ON f.[año] = fp.[año]
+                ON f.[Año] = fp.[Año]
                AND f.Serie = fp.Serie
                AND f.Numero = fp.Numero
             INNER JOIN [castiphone].[dbo].[Clientes] c
@@ -619,7 +619,7 @@ function fetchBillingByResellerRange(PDO $connection, int $resellerId, string $f
                 SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
             FROM [castiphone].[dbo].[Facturas] f
             INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
-                ON f.[aÃ±o] = fp.[aÃ±o]
+                ON f.[Año] = fp.[Año]
                AND f.Serie = fp.Serie
                AND f.Numero = fp.Numero
             INNER JOIN [castiphone].[dbo].[Clientes] c
@@ -642,7 +642,7 @@ function fetchBillingByResellerRange(PDO $connection, int $resellerId, string $f
                 SUM(((fp.Importe * (100 - ISNULL(fp.Descuento, 0)) / 100.0) * ISNULL(fp.Cantidad, 1)) - ISNULL(fp.Coste, 0)) AS beneficio_total
             FROM [castiphone].[dbo].[Facturas] f
             INNER JOIN [castiphone].[dbo].[FacturasProductos] fp
-                ON f.[aÃ±o] = fp.[aÃ±o]
+                ON f.[Año] = fp.[Año]
                AND f.Serie = fp.Serie
                AND f.Numero = fp.Numero
             INNER JOIN [castiphone].[dbo].[Clientes] c
