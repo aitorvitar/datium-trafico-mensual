@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 type ChatMessage = {
   role: "assistant" | "user";
@@ -22,10 +22,22 @@ const INITIAL_MESSAGES: ChatMessage[] = [
 ];
 
 export default function ChatIASection() {
+  const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const target = chatScrollRef.current;
+    if (target) {
+      target.scrollTop = target.scrollHeight;
+    }
+  }, [messages, open]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -34,9 +46,12 @@ export default function ChatIASection() {
       return;
     }
 
+    const nextUserMessage: ChatMessage = { role: "user", content: question };
+    const historyForApi = [...messages, nextUserMessage].slice(-10);
+
     setError("");
     setLoading(true);
-    setMessages((prev) => [...prev, { role: "user", content: question }]);
+    setMessages((prev) => [...prev, nextUserMessage]);
     setInput("");
 
     try {
@@ -47,7 +62,7 @@ export default function ChatIASection() {
         },
         body: JSON.stringify({
           message: question,
-          history: messages.slice(-8),
+          history: historyForApi,
         }),
       });
 
@@ -73,35 +88,52 @@ export default function ChatIASection() {
   }
 
   return (
-    <section className="panel">
-      <h2 className="title" style={{ fontSize: "1.3rem", marginBottom: 8 }}>
-        Chat IA
-      </h2>
-      <p className="subtitle">Consultas en lenguaje natural sobre facturacion de clientes (castiphone).</p>
-
-      <div className="chatBox" aria-live="polite">
-        {messages.map((message, idx) => (
-          <article key={`msg-${idx}`} className={`chatMsg chatMsg-${message.role}`}>
-            <p className="chatRole">{message.role === "assistant" ? "IA" : "Tu"}</p>
-            <p className="chatText">{message.content}</p>
-          </article>
-        ))}
-      </div>
-
-      <form className="chatForm" onSubmit={handleSubmit}>
-        <input
-          type="text"
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder='Escribe tu consulta. Ejemplo: "que ha facturado ConnetSur en 2026?"'
-          disabled={loading}
-        />
-        <button className="btn" type="submit" disabled={loading}>
-          {loading ? "Consultando..." : "Enviar"}
+    <div className="chatFloating">
+      {!open && (
+        <button type="button" className="chatFab" onClick={() => setOpen(true)} aria-label="Abrir Chat IA">
+          Chat IA
         </button>
-      </form>
+      )}
 
-      {error && <p className="errorBox">{error}</p>}
-    </section>
+      {open && (
+        <section className="chatWindow" aria-live="polite">
+          <header className="chatWindowHeader">
+            <div>
+              <h2 className="chatWindowTitle">Chat IA</h2>
+              <p className="chatWindowSubtitle">Consultas de facturacion en lenguaje natural.</p>
+            </div>
+            <button type="button" className="chatWindowClose" onClick={() => setOpen(false)} aria-label="Cerrar chat">
+              ×
+            </button>
+          </header>
+
+          <div className="chatWindowBody">
+            <div className="chatBox" ref={chatScrollRef}>
+              {messages.map((message, idx) => (
+                <article key={`msg-${idx}`} className={`chatMsg chatMsg-${message.role}`}>
+                  <p className="chatRole">{message.role === "assistant" ? "IA" : "Tu"}</p>
+                  <p className="chatText">{message.content}</p>
+                </article>
+              ))}
+            </div>
+
+            {error && <p className="errorBox">{error}</p>}
+
+            <form className="chatForm" onSubmit={handleSubmit}>
+              <input
+                type="text"
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                placeholder='Ej: "facturacion Telcat 2026 por meses"'
+                disabled={loading}
+              />
+              <button className="btn" type="submit" disabled={loading}>
+                {loading ? "Consultando..." : "Enviar"}
+              </button>
+            </form>
+          </div>
+        </section>
+      )}
+    </div>
   );
 }

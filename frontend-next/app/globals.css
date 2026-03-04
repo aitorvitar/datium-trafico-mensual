@@ -276,16 +276,95 @@ a {
   font-family: var(--font-mono), Consolas, monospace;
 }
 
+.chatFloating {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 1200;
+}
+
+.chatFab {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 12px 18px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  background: linear-gradient(135deg, #0f7db8, #2a9bd1);
+  color: #ffffff;
+  box-shadow: 0 14px 32px rgba(15, 125, 184, 0.36);
+  transition: transform 0.16s ease, filter 0.16s ease;
+}
+
+.chatFab:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+.chatWindow {
+  width: min(420px, calc(100vw - 24px));
+  height: min(70vh, 640px);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(170deg, #ffffff 0%, var(--panel-soft) 100%);
+  box-shadow: 0 22px 46px rgba(16, 35, 58, 0.24);
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+}
+
+.chatWindowHeader {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(4px);
+}
+
+.chatWindowTitle {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.chatWindowSubtitle {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.chatWindowClose {
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--text);
+  border-radius: 10px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.chatWindowBody {
+  padding: 10px;
+  display: grid;
+  grid-template-rows: 1fr auto auto;
+  gap: 10px;
+  min-height: 0;
+}
+
 .chatBox {
-  margin-top: 14px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: #ffffff;
   padding: 12px;
   display: grid;
   gap: 10px;
-  max-height: 360px;
   overflow: auto;
+  min-height: 0;
 }
 
 .chatMsg {
@@ -317,7 +396,6 @@ a {
 }
 
 .chatForm {
-  margin-top: 12px;
   display: grid;
   gap: 10px;
   grid-template-columns: 1fr auto;
@@ -388,5 +466,17 @@ a {
   }
   .chatForm {
     grid-template-columns: 1fr;
+  }
+  .chatFloating {
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+  }
+  .chatWindow {
+    width: 100%;
+    height: min(72vh, 620px);
+  }
+  .chatFab {
+    width: 100%;
   }
 }
