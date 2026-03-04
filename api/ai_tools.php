@@ -208,7 +208,11 @@ function aiGetMysqlConnection(string $source): mysqli
  */
 function aiQueryMysql(mysqli $connection, string $sql): array
 {
-    @$connection->query('SET SESSION max_execution_time=20000');
+    try {
+        $connection->query('SET SESSION max_execution_time=20000');
+    } catch (Throwable $e) {
+        // Some MySQL/MariaDB versions do not support this variable; keep query execution.
+    }
     $result = $connection->query($sql);
     if (!$result instanceof mysqli_result) {
         $error = $connection->error;
